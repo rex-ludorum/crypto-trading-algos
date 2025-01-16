@@ -3,7 +3,7 @@ import dateutil
 import numpy as np
 
 def getMicrosecondsFromDate(trade):
-	date = trade[1] + "T" + trade[2]
+	date = trade[1] + "T" + trade[2] + "Z"
 	parsedDate = dateutil.parser.isoparse(date)
 	return round(datetime.datetime.timestamp(parsedDate) * 1000000)
 
@@ -36,7 +36,8 @@ for idx, trade in enumerate(trades):
 	for j, window in enumerate(windows):
 		if microseconds - timeWindows[j][1] > window:
 			startCollectingVols[j] = True
-			for i in range(timeWindows[j][0], idx):
+			i = timeWindows[j][0]
+			while i < idx:
 				newMicroseconds = getMicrosecondsFromDate(trades[i])
 				if microseconds - newMicroseconds > windows[j]:
 					newVol = float(trades[i][4])
@@ -45,8 +46,9 @@ for idx, trade in enumerate(trades):
 					else:
 						sellVols[j] -= newVol
 				else:
-					timeWindows[j] = [i, newMicroseconds]
 					break
+				i += 1
+			timeWindows[j] = [i, getMicrosecondsFromDate(trades[i])]
 		if trade[5] == 'false':
 			buyVols[j] += vol
 		else:
