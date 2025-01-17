@@ -34,6 +34,8 @@ using std::to_string;
 using std::max;
 using std::min;
 using std::max_element;
+using std::setprecision;
+using std::fixed;
 
 using std::cout;
 using std::cerr;
@@ -101,7 +103,11 @@ void initializeDevice() {
 	/**
 	 * Read OpenCL kernel file as a string.
 	 * */
+#ifdef LIST_TRADES
+	std::ifstream kernel_file("analyzerWithTrades.cl");
+#else
 	std::ifstream kernel_file("analyzer.cl");
+#endif
 	std::string src(std::istreambuf_iterator<char>(kernel_file), (std::istreambuf_iterator<char>()));
 
 	/**
@@ -187,7 +193,7 @@ int main() {
 	initializeDevice();
 	_putenv("TZ=/usr/share/zoneinfo/UTC");
 	ifstream myFile;
-	myFile.open("BTC-USD_2024-07-18-23.00.00.000000000_2024-07-22-02.00.00.000000000");
+	myFile.open("BTC-USD_2024-07-22-02.00.00.000000000_2024-11-08-02.00.00.000000000");
 	vector<trade> trades;
 	vector<tradeWithoutDate> tradesWithoutDates;
 
@@ -204,7 +210,7 @@ int main() {
 	double x = 0;
 	generate(stopLosses.begin(), stopLosses.end(), [x] () mutable { return x += 0.5; });
 
-	vector<double> targets(9);
+	vector<double> targets(15);
 	x = 0.5;
 	generate(targets.begin(), targets.end(), [x] () mutable { return x += 0.5; });
 
@@ -324,12 +330,14 @@ int main() {
 		cout << "Error for losses: " << err << endl;
 		return 1;
 	}
+#ifdef LIST_TRADES
 	vector<entryAndExit> entriesAndExits(comboVect.size() * MAX_TOTAL_TRADES, entryAndExit{});
 	cl::Buffer entriesAndExitsBuf(context, CL_MEM_WRITE_ONLY | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR, comboVect.size() * sizeof(entryAndExit) * MAX_TOTAL_TRADES, &entriesAndExits[0], &err);
 	if (err != CL_SUCCESS) {
 		cout << "Error for entriesAndExitsBuf: " << err << endl;
 		return 1;
 	}
+#endif
 
 	cl::Kernel analyzerKernel(program, "analyzer", &err);
 	if (err != CL_SUCCESS) {
@@ -365,10 +373,12 @@ int main() {
 	if (err != CL_SUCCESS) {
 		cout << "Error for testKernel setArg 6: " << err << endl;
 	}
+#ifdef LIST_TRADES
 	err = analyzerKernel.setArg(7, entriesAndExitsBuf);
 	if (err != CL_SUCCESS) {
 		cout << "Error for testKernel setArg 7: " << err << endl;
 	}
+#endif
 
 	cl::CommandQueue queue(context, device, 0, &err);
 	if (err != CL_SUCCESS) {
@@ -412,11 +422,13 @@ int main() {
 		cout << "Error for reading capitals: " << err << endl;
 		return 1;
 	}
+#ifdef LIST_TRADES
 	err = queue.enqueueReadBuffer(entriesAndExitsBuf, CL_TRUE, 0, comboVect.size() * sizeof(entryAndExit) * MAX_TOTAL_TRADES, &entriesAndExits[0]);
 	if (err != CL_SUCCESS) {
 		cout << "Error for reading entriesAndExits: " << err << endl;
 		return 1;
 	}
+#endif
 	err = queue.finish();
 	if (err != CL_SUCCESS) {
 		cout << "Error for finish: " << err << endl;
@@ -448,6 +460,7 @@ int main() {
 			outFile << "Wins: " << to_string(finalWins[i]) << endl;
 			outFile << "Losses: " << to_string(finalLosses[i]) << endl;
 			outFile << "Final capital: " << to_string(finalCapitals[i]) << endl;
+#ifdef LIST_TRADES
 			for (int j = 0; j < MAX_TOTAL_TRADES; j++) {
 				entryAndExit e = entriesAndExits[i * MAX_TOTAL_TRADES + j];
 				if (e.entryIndex == 0) break;
@@ -465,9 +478,11 @@ int main() {
 					}
 				}
 			}
+#endif
 			outFile << endl;
 		}
 		int maxElementIdx = std::max_element(finalCapitals.begin(), finalCapitals.end()) - finalCapitals.begin();
+		outFile << fixed;
 		outFile << "Max return:" << endl;
 		outFile << "Final capital: " << finalCapitals[maxElementIdx] << endl;
 		outFile << "Stop loss: " << comboVect[maxElementIdx].stopLoss << endl;
@@ -478,6 +493,7 @@ int main() {
 		outFile << "Total trades: " << finalTotalTrades[maxElementIdx] << endl;
 		outFile << "Wins: " << finalWins[maxElementIdx] << endl;
 		outFile << "Losses: " << finalLosses[maxElementIdx] << endl;
+#ifdef LIST_TRADES
 		for (int j = 0; j < MAX_TOTAL_TRADES; j++) {
 			entryAndExit e = entriesAndExits[maxElementIdx * MAX_TOTAL_TRADES + j];
 			if (e.entryIndex == 0) break;
@@ -495,10 +511,12 @@ int main() {
 				}
 			}
 		}
+#endif
 		outFile.close();
 	}
 
 	int maxElementIdx = std::max_element(finalCapitals.begin(), finalCapitals.end()) - finalCapitals.begin();
+	cout << fixed;
 	cout << "Max return:" << endl;
 	cout << "Final capital: " << finalCapitals[maxElementIdx] << endl;
 	cout << "Stop loss: " << comboVect[maxElementIdx].stopLoss << endl;

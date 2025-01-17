@@ -1,5 +1,3 @@
-#define MAX_TOTAL_TRADES 42
-
 #define LOSS_BIT 0
 #define WIN_BIT 1
 #define LONG_BIT 2
@@ -44,7 +42,7 @@ __kernel void test(const int g, __global float* ds) {
 	printf("%f\n", ds[index]);
 }
 
-__kernel void analyzer(const int numTrades, __global tradeWithoutDate* trades, __global combo* combos, __global double* capitals, __global int* totalTrades, __global int* wins, __global int* losses, __global entryAndExit* entriesAndExits) {
+__kernel void analyzer(const int numTrades, __global tradeWithoutDate* trades, __global combo* combos, __global double* capitals, __global int* totalTrades, __global int* wins, __global int* losses) {
 	int index = get_global_id(0);
 	double capital = 1.0;
 	combo c = combos[index];
@@ -87,7 +85,6 @@ __kernel void analyzer(const int numTrades, __global tradeWithoutDate* trades, _
 				e = (entry) {price, true};
 				currentTrade.entryIndex = i;
 				currentTrade.longShortWinLoss |= 1 << LONG_BIT;
-				entriesAndExits[index * MAX_TOTAL_TRADES + currentTradeIdx] = currentTrade;
 				// tradeLogs[j][k].emplace_back(joinStrings(entries[j][k]));
 				t += 1;
 			} else if (sellVol >= c.sellVolPercentile) {
@@ -95,7 +92,6 @@ __kernel void analyzer(const int numTrades, __global tradeWithoutDate* trades, _
 				e = (entry) {price, false};
 				currentTrade.entryIndex = i;
 				currentTrade.longShortWinLoss |= 1 << SHORT_BIT;
-				entriesAndExits[index * MAX_TOTAL_TRADES + currentTradeIdx] = currentTrade;
 				// tradeLogs[j][k].emplace_back(joinStrings(entries[j][k]));
 				t += 1;
 			}
@@ -111,7 +107,6 @@ __kernel void analyzer(const int numTrades, __global tradeWithoutDate* trades, _
 					w += 1;
 					currentTrade.exitIndex = i;
 					currentTrade.longShortWinLoss |= 1 << WIN_BIT;
-					entriesAndExits[index * MAX_TOTAL_TRADES + currentTradeIdx++] = currentTrade;
 					currentTrade = (entryAndExit) {0, 0, 0};
 				} else if (price <= (1 - c.stopLoss / 100) * e.price) {
 					capital *= 1 - c.stopLoss / 100;
@@ -121,7 +116,6 @@ __kernel void analyzer(const int numTrades, __global tradeWithoutDate* trades, _
 					l += 1;
 					currentTrade.exitIndex = i;
 					currentTrade.longShortWinLoss |= 1 << LOSS_BIT;
-					entriesAndExits[index * MAX_TOTAL_TRADES + currentTradeIdx++] = currentTrade;
 					currentTrade = (entryAndExit) {0, 0, 0};
 				}
 			} else {
@@ -135,7 +129,6 @@ __kernel void analyzer(const int numTrades, __global tradeWithoutDate* trades, _
 					w += 1;
 					currentTrade.exitIndex = i;
 					currentTrade.longShortWinLoss |= 1 << WIN_BIT;
-					entriesAndExits[index * MAX_TOTAL_TRADES + currentTradeIdx++] = currentTrade;
 					currentTrade = (entryAndExit) {0, 0, 0};
 				} else if (price >= (1 + c.stopLoss / 100) * e.price) {
 					capital *= 1 - c.stopLoss / 100;
@@ -145,7 +138,6 @@ __kernel void analyzer(const int numTrades, __global tradeWithoutDate* trades, _
 					l += 1;
 					currentTrade.exitIndex = i;
 					currentTrade.longShortWinLoss |= 1 << LOSS_BIT;
-					entriesAndExits[index * MAX_TOTAL_TRADES + currentTradeIdx++] = currentTrade;
 					currentTrade = (entryAndExit) {0, 0, 0};
 				}
 			}
@@ -157,139 +149,3 @@ __kernel void analyzer(const int numTrades, __global tradeWithoutDate* trades, _
 	losses[index] = l;
 	capitals[index] = capital;
 }
-
-	/*
-	// vector<entry> entries;
-	vector<combo> comboVect;
-	int numEntries = 0;
-
-	for (int i = 0; i < NUM_WINDOWS; i++) {
-		for (int j = 0; j < combos[i].size(); j++) {
-			combo c = {get<0>(combos[i][j]), get<1>(combos[i][j]), get<2>(combos[i][j]), get<3>(combos[i][j]), get<4>(combos[i][j])};
-			comboVect.emplace_back(c);
-		}
-		// entries[i] = vector< tuple<bool, double, string, int> >(combos[i].size(), {false, 0.0, "", 0});
-		numEntries += combos[i].size();
-		// tradeLogs[i] = vector< vector<string> >(combos[i].size());
-		// startingCapitals[i] = vector<double>(combos[i].size(), 1.0);
-		// maxProfits[i] = vector<double>(combos[i].size(), 0.0);
-		// totalTrades[i] = vector<int>(combos[i].size(), 0);
-		// wins[i] = vector<int>(combos[i].size(), 0);
-		// losses[i] = vector<int>(combos[i].size(), 0);
-	}
-	cl::Buffer inputCombos(context, CL_MEM_READ_ONLY | CL_MEM_HOST_NO_ACCESS | CL_MEM_COPY_HOST_PTR, comboVect.size() * sizeof(combo), &comboVect[0]);
-	// vector<double> entries(numEntries, 0);
-	cl::Buffer entries(context, CL_MEM_READ_ONLY | CL_MEM_HOST_NO_ACCESS, numEntries * sizeof(int));
-	// vector<double> startingCapitals(numStartingCapitals, 0);
-	cl::Buffer startingCapitals(context, CL_MEM_READ_ONLY | CL_MEM_HOST_NO_ACCESS, numEntries * sizeof(int));
-	// vector<double> maxProfits(numMaxProfits, 0);
-	cl::Buffer maxProfits(context, CL_MEM_READ_ONLY | CL_MEM_HOST_NO_ACCESS, numEntries * sizeof(int));
-	// vector<int> totalTrades(numTotalTrades, 0);
-	cl::Buffer totalTrades(context, CL_MEM_READ_ONLY | CL_MEM_HOST_NO_ACCESS, numEntries * sizeof(int));
-	// vector<int> wins(numWins, 0);
-	cl::Buffer wins(context, CL_MEM_READ_ONLY | CL_MEM_HOST_NO_ACCESS, numEntries * sizeof(int));
-	// vector<int> losses(numLosses, 0);
-	cl::Buffer losses(context, CL_MEM_READ_ONLY | CL_MEM_HOST_NO_ACCESS, numEntries * sizeof(int));
-
-	for (int i = 0; i < trades.size(); i++) {
-		double vol = trades[i].qty;
-		double price = trades[i].price;
-		long long microseconds = trades[i].timestamp;
-
-		for (int j = 0; j < windows.size(); j++) {
-			if (microseconds - get<1>(timeWindows[j]) > windows[j]) {
-				for (int k = get<0>(timeWindows[j]); k < i; k++) {
-					long long newMicroseconds = trades[k].timestamp;
-					if (microseconds - newMicroseconds > windows[j]) {
-						double newVol = trades[k].qty;
-						if (trades[k].isBuyerMaker) sellVols[j] -= newVol;
-						else buyVols[j] -= newVol;
-					} else {
-						timeWindows[j] = {k, newMicroseconds};
-						break;
-					}
-				}
-			}
-			if (trades[i].isBuyerMaker) sellVols[j] += vol;
-			else buyVols[j] += vol;
-
-			for (int k = 0; k < combos[j].size(); k++) {
-				double buyVolPercentile = get<0>(combos[j][k]);
-				double sellVolPercentile = get<1>(combos[j][k]);
-				double stopLoss = get<2>(combos[j][k]);
-				double target = get<3>(combos[j][k]);
-
-				if (get<3>(entries[j][k]) == 0) {
-					if (buyVols[j] >= buyVolPercentile) {
-						maxProfits[j][k] = price;
-						entries[j][k] = {true, price, trades[i].date, trades[i].tradeId};
-						tradeLogs[j][k].emplace_back(joinStrings(entries[j][k]));
-						totalTrades[j][k] += 1;
-					} else if (sellVols[j] >= sellVolPercentile) {
-						maxProfits[j][k] = price;
-						entries[j][k] = {false, price, trades[i].date, trades[i].tradeId};
-						tradeLogs[j][k].emplace_back(joinStrings(entries[j][k]));
-						totalTrades[j][k] += 1;
-					}
-				} else {
-					if (get<0>(entries[j][k])) {
-						maxProfits[j][k] = max(maxProfits[j][k], price);
-						double profitMargin = (maxProfits[j][k] - get<1>(entries[j][k])) / get<1>(entries[j][k]);
-						if (profitMargin >= target / 100) {
-							startingCapitals[j][k] *= 1 + profitMargin;
-							entries[j][k] = {false, 0.0, "", 0};
-							tradeLogs[j][k].emplace_back("Profit: " + to_string(price) + " " + trades[i].date + " " + to_string(trades[i].tradeId));
-							tradeLogs[j][k].emplace_back("Capital: " + to_string(startingCapitals[j][k]));
-							wins[j][k] += 1;
-						} else if (price <= (1 - stopLoss / 100) * get<1>(entries[j][k])) {
-							startingCapitals[j][k] *= 1 - stopLoss / 100;
-							entries[j][k] = {false, 0.0, "", 0};
-							tradeLogs[j][k].emplace_back("Loss: " + to_string(price) + " " + trades[i].date + " " + to_string(trades[i].tradeId));
-							tradeLogs[j][k].emplace_back("Capital: " + to_string(startingCapitals[j][k]));
-							losses[j][k] += 1;
-						}
-					} else {
-						maxProfits[j][k] = min(maxProfits[j][k], price);
-						double profitMargin = (get<1>(entries[j][k]) - maxProfits[j][k]) / get<1>(entries[j][k]);
-						if (profitMargin >= target / 100) {
-							startingCapitals[j][k] *= 1 + profitMargin;
-							entries[j][k] = {false, 0.0, "", 0};
-							tradeLogs[j][k].emplace_back("Profit: " + to_string(price) + " " + trades[i].date + " " + to_string(trades[i].tradeId));
-							tradeLogs[j][k].emplace_back("Capital: " + to_string(startingCapitals[j][k]));
-							wins[j][k] += 1;
-						} else if (price >= (1 + stopLoss / 100) * get<1>(entries[j][k])) {
-							startingCapitals[j][k] *= 1 - stopLoss / 100;
-							entries[j][k] = {false, 0.0, "", 0};
-							tradeLogs[j][k].emplace_back("Loss: " + to_string(price) + " " + trades[i].date + " " + to_string(trades[i].tradeId));
-							tradeLogs[j][k].emplace_back("Capital: " + to_string(startingCapitals[j][k]));
-							losses[j][k] += 1;
-						}
-					}
-				}
-			}
-		}
-	}
-
-	std::ofstream outFile;
-	outFile.open("resultsCpp");
-	if (outFile.is_open()) {
-		for (int i = 0; i < NUM_WINDOWS; i++) {
-			for (int j = 0; j < combos[i].size(); j++) {
-				outFile << "Time window: " << to_string(windows[i]) << endl;
-				outFile << "Buy vol threshold: " << to_string(get<0>(combos[i][j])) << endl;
-				outFile << "Sell vol threshold: " << to_string(get<1>(combos[i][j])) << endl;
-				outFile << "Stop loss: " << to_string(get<2>(combos[i][j])) << endl;
-				outFile << "Target: " << to_string(get<3>(combos[i][j])) << endl;
-				outFile << "Total trades: " << to_string(totalTrades[i][j]) << endl;
-				outFile << "Wins: " << to_string(wins[i][j]) << endl;
-				outFile << "Losses: " << to_string(losses[i][j]) << endl;
-				outFile << "Final capital: " << to_string(startingCapitals[i][j]) << endl;
-				for (string s : tradeLogs[i][j]) {
-					outFile << s << endl;
-				}
-				outFile << endl;
-			}
-		}
-		outFile.close();
-	}
-	*/
