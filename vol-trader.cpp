@@ -104,9 +104,9 @@ void initializeDevice() {
 	 * Read OpenCL kernel file as a string.
 	 * */
 #ifdef LIST_TRADES
-	std::ifstream kernel_file("analyzerWithTrades.cl");
+	std::ifstream kernel_file("vol-trader-with-trades.cl");
 #else
-	std::ifstream kernel_file("analyzer.cl");
+	std::ifstream kernel_file("vol-trader.cl");
 #endif
 	std::string src(std::istreambuf_iterator<char>(kernel_file), (std::istreambuf_iterator<char>()));
 
@@ -339,42 +339,42 @@ int main() {
 	}
 #endif
 
-	cl::Kernel analyzerKernel(program, "analyzer", &err);
+	cl::Kernel volKernel(program, "volTrader", &err);
 	if (err != CL_SUCCESS) {
-		cout << "Error for creating analyzerKernel: " << err << endl;
+		cout << "Error for creating volKernel: " << err << endl;
 		return 1;
 	}
 	int s = tradesWithoutDates.size();
-	err = analyzerKernel.setArg(0, sizeof(int), &s);
+	err = volKernel.setArg(0, sizeof(int), &s);
 	if (err != CL_SUCCESS) {
 		cout << "Error for testKernel setArg 0: " << err << endl;
 	}
-	err = analyzerKernel.setArg(1, inputTrades);
+	err = volKernel.setArg(1, inputTrades);
 	if (err != CL_SUCCESS) {
 		cout << "Error for testKernel setArg 1: " << err << endl;
 	}
-	err = analyzerKernel.setArg(2, inputCombos);
+	err = volKernel.setArg(2, inputCombos);
 	if (err != CL_SUCCESS) {
 		cout << "Error for testKernel setArg 2: " << err << endl;
 	}
-	err = analyzerKernel.setArg(3, capitals);
+	err = volKernel.setArg(3, capitals);
 	if (err != CL_SUCCESS) {
 		cout << "Error for testKernel setArg 3: " << err << endl;
 	}
-	err = analyzerKernel.setArg(4, totalTrades);
+	err = volKernel.setArg(4, totalTrades);
 	if (err != CL_SUCCESS) {
 		cout << "Error for testKernel setArg 4: " << err << endl;
 	}
-	err = analyzerKernel.setArg(5, wins);
+	err = volKernel.setArg(5, wins);
 	if (err != CL_SUCCESS) {
 		cout << "Error for testKernel setArg 5: " << err << endl;
 	}
-	err = analyzerKernel.setArg(6, losses);
+	err = volKernel.setArg(6, losses);
 	if (err != CL_SUCCESS) {
 		cout << "Error for testKernel setArg 6: " << err << endl;
 	}
 #ifdef LIST_TRADES
-	err = analyzerKernel.setArg(7, entriesAndExitsBuf);
+	err = volKernel.setArg(7, entriesAndExitsBuf);
 	if (err != CL_SUCCESS) {
 		cout << "Error for testKernel setArg 7: " << err << endl;
 	}
@@ -391,9 +391,9 @@ int main() {
 	cout << comboVect.size() * sizeof(combo) << endl;
 	cout << CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE << endl;
 	*/
-	err = queue.enqueueNDRangeKernel(analyzerKernel, cl::NullRange, cl::NDRange(comboVect.size()));
+	err = queue.enqueueNDRangeKernel(volKernel, cl::NullRange, cl::NDRange(comboVect.size()));
 	if (err != CL_SUCCESS) {
-		cout << "Error for analyzerKernel: " << err << endl;
+		cout << "Error for volKernel: " << err << endl;
 		return 1;
 	}
 

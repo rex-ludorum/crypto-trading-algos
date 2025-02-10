@@ -44,7 +44,7 @@ __kernel void test(const int g, __global float* ds) {
 	printf("%f\n", ds[index]);
 }
 
-__kernel void analyzer(const int numTrades, __global tradeWithoutDate* trades, __global combo* combos, __global double* capitals, __global int* totalTrades, __global int* wins, __global int* losses, __global entryAndExit* entriesAndExits) {
+__kernel void volTrader(const int numTrades, __global tradeWithoutDate* trades, __global combo* combos, __global double* capitals, __global int* totalTrades, __global int* wins, __global int* losses, __global entryAndExit* entriesAndExits) {
 	int index = get_global_id(0);
 	double capital = 1.0;
 	combo c = combos[index];
