@@ -84,10 +84,24 @@ cl::Device getDefaultDevice() {
 		exit(1);
 	}
 
+	int maxComputeUnits = devices.front().getInfo<CL_DEVICE_MAX_COMPUTE_UNITS>();
+	int maxIdx = 0;
+
+	for (size_t i = 1; i < devices.size(); i++) {
+		int tmp = devices[i].getInfo<CL_DEVICE_MAX_COMPUTE_UNITS>();
+		if (tmp > maxComputeUnits) {
+			maxComputeUnits = tmp;
+			maxIdx = i;
+		}
+	}
+
 	/**
 	 * Return the first device found.
 	 * */
-	return devices.front();
+	// return devices.front();
+
+	// Return most powerful device
+	return devices[maxIdx];
 }
 
 void initializeDevice() {
@@ -183,11 +197,16 @@ string joinStrings(tuple<bool, double, string, int> t) {
 	return s;
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+	if (argc < 2) {
+		cout << "No file name specified!" << endl;
+		return 1;
+	}
+
 	initializeDevice();
 	_putenv("TZ=/usr/share/zoneinfo/UTC");
 	ifstream myFile;
-	myFile.open("BTC-USD_2024-07-22-02.00.00.000000000_2024-11-08-02.00.00.000000000");
+	myFile.open(argv[1]);
 	vector<trade> trades;
 	vector<tradeWithoutDate> tradesWithoutDates;
 
@@ -322,12 +341,14 @@ int main() {
 		cout << "Error for queue: " << err << endl;
 		return 1;
 	}
+
 	/*
 	cout << tradesWithoutDates.size() << endl;
 	cout << tradesWithoutDates.size() * sizeof(tradeWithoutDate) << endl;
 	cout << comboVect.size() * sizeof(combo) << endl;
 	cout << CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE << endl;
 	*/
+
 	err = queue.enqueueNDRangeKernel(trendKernel, cl::NullRange, cl::NDRange(comboVect.size()));
 	if (err != CL_SUCCESS) {
 		cout << "Error for trendKernel: " << err << endl;
@@ -371,18 +392,6 @@ int main() {
 		cout << "Error for finish: " << err << endl;
 		return 1;
 	}
-
-	/*
-	for (unsigned int i = 0; i < comboVect.size(); i++) {
-		cout << "Stop loss: " << comboVect[i].stopLoss << endl;
-		cout << "Target: " << comboVect[i].target << endl;
-		cout << "Window: " << comboVect[i].window / ONE_MINUTE_MICROSECONDS << " minutes" << endl;
-		cout << "Buy volume percentile: " << comboVect[i].buyVolPercentile << endl;
-		cout << "Sell volume percentile: " << comboVect[i].sellVolPercentile << endl;
-		cout << finalCapitals[i] << " " << finalTotalTrades[i] << " " << finalWins[i] << " " << finalLosses[i] << endl;
-		// cout << finalTest[i] << endl;
-	}
-	*/
 
 	ofstream outFile;
 	outFile.open("resultsCppPar");
@@ -458,25 +467,6 @@ int main() {
 	cout << "Total trades: " << finalTotalTrades[maxElementIdx] << endl;
 	cout << "Wins: " << finalWins[maxElementIdx] << endl;
 	cout << "Losses: " << finalLosses[maxElementIdx] << endl;
-
-	/*
-	int maxTradesIdx = std::max_element(finalTotalTrades.begin(), finalTotalTrades.end()) - finalTotalTrades.begin();
-	cout << finalTotalTrades[maxTradesIdx] << endl;
-	*/
-
-	// combo* testCombos = (combo*) malloc(comboVect.size() * sizeof(combo));
-	// queue.enqueueReadBuffer(inputCombos, CL_TRUE, 0, comboVect.size() * sizeof(combo), testCombos);
-	// tradeWithoutDate* testTrades = (tradeWithoutDate*) malloc(tradesWithoutDates.size() * sizeof(tradeWithoutDate));
-	// queue.enqueueReadBuffer(inputTrades, CL_TRUE, 0, tradesWithoutDates.size() * sizeof(tradeWithoutDate), testTrades);
-	/*
-	for (int i = 0; i < comboVect.size(); i++) {
-		// cout << finalCapitals[i] << endl;
-		// cout << testCombos[i].buyVolPercentile << endl;
-	}
-	for (int i = 0; i < tradesWithoutDates.size(); i++) {
-		// cout << testTrades[i].timestamp << endl;
-	}
-	*/
 
 	return 0;
 }

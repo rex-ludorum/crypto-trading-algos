@@ -88,7 +88,6 @@ __kernel void volTrader(const int numTrades, __global tradeWithoutDate* trades, 
 				currentTrade.entryIndex = i;
 				currentTrade.longShortWinLoss |= 1 << LONG_BIT;
 				entriesAndExits[index * MAX_TOTAL_TRADES + currentTradeIdx] = currentTrade;
-				// tradeLogs[j][k].emplace_back(joinStrings(entries[j][k]));
 				t += 1;
 			} else if (sellVol >= c.sellVolPercentile) {
 				maxProfit = price;
@@ -96,7 +95,6 @@ __kernel void volTrader(const int numTrades, __global tradeWithoutDate* trades, 
 				currentTrade.entryIndex = i;
 				currentTrade.longShortWinLoss |= 1 << SHORT_BIT;
 				entriesAndExits[index * MAX_TOTAL_TRADES + currentTradeIdx] = currentTrade;
-				// tradeLogs[j][k].emplace_back(joinStrings(entries[j][k]));
 				t += 1;
 			}
 		} else {
@@ -106,8 +104,6 @@ __kernel void volTrader(const int numTrades, __global tradeWithoutDate* trades, 
 				if (profitMargin >= c.target / 100) {
 					capital *= 1 + profitMargin;
 					e = (entry) {0.0, false};
-					// tradeLogs[j][k].emplace_back("Profit: " + to_string(price) + " " + trades[i].date + " " + to_string(trades[i].tradeId));
-					// tradeLogs[j][k].emplace_back("Capital: " + to_string(capitals[j][k]));
 					w += 1;
 					currentTrade.exitIndex = i;
 					currentTrade.longShortWinLoss |= 1 << WIN_BIT;
@@ -116,8 +112,6 @@ __kernel void volTrader(const int numTrades, __global tradeWithoutDate* trades, 
 				} else if (price <= (1 - c.stopLoss / 100) * e.price) {
 					capital *= 1 - c.stopLoss / 100;
 					e = (entry) {0.0, false};
-					// tradeLogs[j][k].emplace_back("Loss: " + to_string(price) + " " + trades[i].date + " " + to_string(trades[i].tradeId));
-					// tradeLogs[j][k].emplace_back("Capital: " + to_string(capitals[j][k]));
 					l += 1;
 					currentTrade.exitIndex = i;
 					currentTrade.longShortWinLoss |= 1 << LOSS_BIT;
@@ -130,8 +124,6 @@ __kernel void volTrader(const int numTrades, __global tradeWithoutDate* trades, 
 				if (profitMargin >= c.target / 100) {
 					capital *= 1 + profitMargin;
 					e = (entry) {0.0, false};
-					// tradeLogs[j][k].emplace_back("Profit: " + to_string(price) + " " + trades[i].date + " " + to_string(trades[i].tradeId));
-					// tradeLogs[j][k].emplace_back("Capital: " + to_string(capitals[j][k]));
 					w += 1;
 					currentTrade.exitIndex = i;
 					currentTrade.longShortWinLoss |= 1 << WIN_BIT;
@@ -140,8 +132,6 @@ __kernel void volTrader(const int numTrades, __global tradeWithoutDate* trades, 
 				} else if (price >= (1 + c.stopLoss / 100) * e.price) {
 					capital *= 1 - c.stopLoss / 100;
 					e = (entry) {0.0, false};
-					// tradeLogs[j][k].emplace_back("Loss: " + to_string(price) + " " + trades[i].date + " " + to_string(trades[i].tradeId));
-					// tradeLogs[j][k].emplace_back("Capital: " + to_string(capitals[j][k]));
 					l += 1;
 					currentTrade.exitIndex = i;
 					currentTrade.longShortWinLoss |= 1 << LOSS_BIT;
