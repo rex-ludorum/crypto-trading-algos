@@ -57,15 +57,13 @@ __kernel void volTrendTrader(const int numTrades, __global tradeWithoutDate* tra
 	double precomputedShortEntryThreshold = 1 - c.entryThreshold * 0.01;
 
 	for (int i = 0; i < numTrades; i++) {
-		/*
 		if (index == 0) {
-			if (i & 524287 == 0) {
+			if ((i & 524287) == 0) {
 				printf("%d\n", i);
 			} else if (i == numTrades - 1) {
 				printf("last\n");
 			}
 		}
-		*/
 		double vol = trades[i].qty;
 		double price = trades[i].price;
 		long microseconds = trades[i].timestamp;

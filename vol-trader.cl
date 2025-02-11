@@ -54,6 +54,25 @@ __kernel void volTrader(const int numTrades, __global tradeWithoutDate* trades, 
 		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
 		long microseconds = trades[i].timestamp;
 
+		if (e.price != 0.0) {
+			double profitMargin;
+			if (e.isLong) {
+				profitMargin = price / e.price;
+			} else {
+				profitMargin = 2 - price / e.price;
+			}
+
+			if (profitMargin >= precomputedTarget) {
+				capital *= profitMargin;
+				e = (entry) {0.0, false};
+				w += 1;
+			} else if (profitMargin <= precomputedStopLoss) {
+				capital *= profitMargin;
+				e = (entry) {0.0, false};
+				l += 1;
+			}
+		}
+
 		if (microseconds - tw.timestamp > c.window) {
 			for (int k = tw.tradeId; k < i; k++) {
 				long newMicroseconds = trades[k].timestamp;
@@ -77,23 +96,6 @@ __kernel void volTrader(const int numTrades, __global tradeWithoutDate* trades, 
 			} else if (sellVol >= c.sellVolPercentile) {
 				e = (entry) {price, false};
 				t += 1;
-			}
-		} else {
-			double profitMargin;
-			if (e.isLong) {
-				profitMargin = price / e.price;
-			} else {
-				profitMargin = 2 - price / e.price;
-			}
-
-			if (profitMargin >= precomputedTarget) {
-				capital *= profitMargin;
-				e = (entry) {0.0, false};
-				w += 1;
-			} else if (profitMargin <= precomputedStopLoss) {
-				capital *= profitMargin;
-				e = (entry) {0.0, false};
-				l += 1;
 			}
 		}
 	}
