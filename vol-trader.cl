@@ -42,8 +42,10 @@ __kernel void volTrader(const int numTrades, __global tradeWithoutDate* trades, 
 	timeWindow tw = {0, 0};
 	double buyVol = 0;
 	double sellVol = 0;
-	double maxProfit = 0;
 	entry e = {0, false};
+
+	double precomputedTarget = 1 + c.target * 0.01;
+	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
 
 	for (int i = 0; i < numTrades; i++) {
 		double vol = trades[i].qty;
@@ -67,41 +69,31 @@ __kernel void volTrader(const int numTrades, __global tradeWithoutDate* trades, 
 		}
 		if (trades[i].isBuyerMaker) sellVol += vol;
 		else buyVol += vol;
+
 		if (e.price == 0.0) {
 			if (buyVol >= c.buyVolPercentile) {
-				maxProfit = price;
 				e = (entry) {price, true};
 				t += 1;
 			} else if (sellVol >= c.sellVolPercentile) {
-				maxProfit = price;
 				e = (entry) {price, false};
 				t += 1;
 			}
 		} else {
+			double profitMargin;
 			if (e.isLong) {
-				maxProfit = max(maxProfit, price);
-				double profitMargin = (maxProfit - e.price) / e.price;
-				if (profitMargin >= c.target / 100) {
-					capital *= 1 + profitMargin;
-					e = (entry) {0.0, false};
-					w += 1;
-				} else if (price <= (1 - c.stopLoss / 100) * e.price) {
-					capital *= 1 - c.stopLoss / 100;
-					e = (entry) {0.0, false};
-					l += 1;
-				}
+				profitMargin = price / e.price;
 			} else {
-				maxProfit = min(maxProfit, price);
-				double profitMargin = (e.price - maxProfit) / e.price;
-				if (profitMargin >= c.target / 100) {
-					capital *= 1 + profitMargin;
-					e = (entry) {0.0, false};
-					w += 1;
-				} else if (price >= (1 + c.stopLoss / 100) * e.price) {
-					capital *= 1 - c.stopLoss / 100;
-					e = (entry) {0.0, false};
-					l += 1;
-				}
+				profitMargin = 2 - price / e.price;
+			}
+
+			if (profitMargin >= precomputedTarget) {
+				capital *= profitMargin;
+				e = (entry) {0.0, false};
+				w += 1;
+			} else if (profitMargin <= precomputedStopLoss) {
+				capital *= profitMargin;
+				e = (entry) {0.0, false};
+				l += 1;
 			}
 		}
 	}

@@ -18,6 +18,7 @@ using std::getline;
 using std::vector;
 using std::istream_iterator;
 using std::chrono::system_clock;
+using std::chrono::high_resolution_clock;
 using std::chrono::microseconds;
 using std::chrono::duration_cast;
 using std::stoi;
@@ -141,7 +142,7 @@ void initializeDevice() {
 	err = program.build();
 	if (err != CL_BUILD_SUCCESS) {
 		cerr << "Error!\nBuild Status: " << program.getBuildInfo<CL_PROGRAM_BUILD_STATUS>(device)
-				 << "\nBuild Log:\t " << program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device) << std::endl;
+				 << "\nBuild Log:\t " << program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device) << endl;
 		exit(1);
 	}
 }
@@ -210,6 +211,8 @@ int main(int argc, char* argv[]) {
 		return 1;
 	}
 
+	auto startTime = high_resolution_clock::now();
+
 	initializeDevice();
 	_putenv("TZ=/usr/share/zoneinfo/UTC");
 	ifstream myFile;
@@ -255,7 +258,12 @@ int main(int argc, char* argv[]) {
 			tradesWithoutDates.emplace_back(convertTrade(t));
 		}
 		myFile.close();
+
+		auto fileTime = high_resolution_clock::now();
+		auto duration = duration_cast<microseconds>(fileTime - startTime);
+		cout << "Time taken to read input: " << (double) duration.count() / 1000000 << " seconds" << endl;
 	}
+
 	cl_int err;
 	cl::Buffer inputTrades(context, CL_MEM_READ_ONLY | CL_MEM_HOST_NO_ACCESS | CL_MEM_COPY_HOST_PTR, tradesWithoutDates.size() * sizeof(tradeWithoutDate), &tradesWithoutDates[0], &err);
 	if (err != CL_SUCCESS) {
@@ -318,6 +326,16 @@ int main(int argc, char* argv[]) {
 			comboVect.emplace_back(c);
 		}
 	}
+
+	cout << tradesWithoutDates.size() << endl;
+	cout << tradesWithoutDates.size() * sizeof(tradeWithoutDate) << endl;
+	cout << comboVect.size() << endl;
+	cout << comboVect.size() * sizeof(combo) << endl;
+	cout << comboVect.size() * sizeof(cl_double) << endl;
+	cout << comboVect.size() * sizeof(cl_int) << endl;
+	cout << device.getInfo<CL_DEVICE_GLOBAL_MEM_SIZE>() << endl;
+	cout << tradesWithoutDates.size() * sizeof(tradeWithoutDate) + comboVect.size() * sizeof(combo) + comboVect.size() * sizeof(cl_double) + 3 * comboVect.size() * sizeof(cl_int) << endl;
+
 	cl::Buffer inputCombos(context, CL_MEM_READ_ONLY | CL_MEM_HOST_NO_ACCESS | CL_MEM_COPY_HOST_PTR, comboVect.size() * sizeof(combo), &comboVect[0], &err);
 	if (err != CL_SUCCESS) {
 		cout << "Error for inputCombos: " << err << endl;
@@ -406,6 +424,8 @@ int main(int argc, char* argv[]) {
 	cout << CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE << endl;
 	*/
 
+	auto beforeKernelTime = high_resolution_clock::now();
+
 	err = queue.enqueueNDRangeKernel(volTrendKernel, cl::NullRange, cl::NDRange(comboVect.size()));
 	if (err != CL_SUCCESS) {
 		cout << "Error for volTrendKernel: " << err << endl;
@@ -450,6 +470,11 @@ int main(int argc, char* argv[]) {
 		return 1;
 	}
 
+	auto afterKernelTime = high_resolution_clock::now();
+	auto duration = duration_cast<microseconds>(afterKernelTime - beforeKernelTime);
+	cout << "Time taken to run kernel: " << (double) duration.count() / 1000000 << " seconds" << endl;
+
+#ifdef WRITE_OUTPUT
 	ofstream outFile;
 	outFile.open("resultsCppPar");
 	if (outFile.is_open()) {
@@ -518,7 +543,12 @@ int main(int argc, char* argv[]) {
 		}
 #endif
 		outFile.close();
+
+		auto outputTime = high_resolution_clock::now();
+		duration = duration_cast<microseconds>(outputTime - afterKernelTime);
+		cout << "Time taken to write output: " << (double) duration.count() / 1000000 << " seconds" << endl;
 	}
+#endif
 
 	int maxElementIdx = std::max_element(finalCapitals.begin(), finalCapitals.end()) - finalCapitals.begin();
 	cout << fixed;
@@ -533,6 +563,10 @@ int main(int argc, char* argv[]) {
 	cout << "Total trades: " << finalTotalTrades[maxElementIdx] << endl;
 	cout << "Wins: " << finalWins[maxElementIdx] << endl;
 	cout << "Losses: " << finalLosses[maxElementIdx] << endl;
+
+	auto endTime = high_resolution_clock::now();
+	duration = duration_cast<microseconds>(endTime - startTime);
+	cout << "Total time taken: " << (double) duration.count() / 1000000 << " seconds" << endl;
 
 	return 0;
 }

@@ -43,16 +43,29 @@ __kernel void volTrendTrader(const int numTrades, __global tradeWithoutDate* tra
 	timeWindow tw = {0, 0};
 	double buyVol = 0;
 	double sellVol = 0;
-	double maxProfit = 0;
 	entry e = {0, false};
 
-	double pivotPrice = trades[0].price;
 	double maxPrice = trades[0].price;
 	double minPrice = trades[0].price;
 	bool started = false;
 	bool increasing = false;
 
+	double precomputedTarget = 1 + c.target * 0.01;
+	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
+
+	double precomputedLongEntryThreshold = 1 + c.entryThreshold * 0.01;
+	double precomputedShortEntryThreshold = 1 - c.entryThreshold * 0.01;
+
 	for (int i = 0; i < numTrades; i++) {
+		/*
+		if (index == 0) {
+			if (i & 524287 == 0) {
+				printf("%d\n", i);
+			} else if (i == numTrades - 1) {
+				printf("last\n");
+			}
+		}
+		*/
 		double vol = trades[i].qty;
 		double price = trades[i].price;
 		long microseconds = trades[i].timestamp;
@@ -60,28 +73,21 @@ __kernel void volTrendTrader(const int numTrades, __global tradeWithoutDate* tra
 		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
 
 		if (e.price != 0.0) {
+			double profitMargin;
 			if (e.isLong) {
-				double profitMargin = (price - e.price) / e.price;
-				if (profitMargin >= c.target / 100) {
-					capital *= 1 + profitMargin;
-					e = (entry) {0.0, false};
-					w += 1;
-				} else if (price <= (1 - c.stopLoss / 100) * e.price) {
-					capital *= 1 - c.stopLoss / 100;
-					e = (entry) {0.0, false};
-					l += 1;
-				}
+				profitMargin = price / e.price;
 			} else {
-				double profitMargin = (e.price - price) / e.price;
-				if (profitMargin >= c.target / 100) {
-					capital *= 1 + profitMargin;
-					e = (entry) {0.0, false};
-					w += 1;
-				} else if (price >= (1 + c.stopLoss / 100) * e.price) {
-					capital *= 1 - c.stopLoss / 100;
-					e = (entry) {0.0, false};
-					l += 1;
-				}
+				profitMargin = 2 - price / e.price;
+			}
+
+			if (profitMargin >= precomputedTarget) {
+				capital *= profitMargin;
+				e = (entry) {0.0, false};
+				w += 1;
+			} else if (profitMargin <= precomputedStopLoss) {
+				capital *= profitMargin;
+				e = (entry) {0.0, false};
+				l += 1;
 			}
 		}
 
@@ -109,9 +115,8 @@ __kernel void volTrendTrader(const int numTrades, __global tradeWithoutDate* tra
 			}
 		}
 
-		if ((price - minPrice) / minPrice * 100 >= c.entryThreshold) {
+		if (price / minPrice >= precomputedLongEntryThreshold) {
 			if (started && !increasing) {
-				pivotPrice = minPrice;
 				maxPrice = 1;
 				increasing = true;
 				if (e.price == 0.0 && buyVol >= c.buyVolPercentile) {
@@ -122,9 +127,8 @@ __kernel void volTrendTrader(const int numTrades, __global tradeWithoutDate* tra
 				started = true;
 				increasing = true;
 			}
-		} else if ((maxPrice - price) / maxPrice * 100 >= c.entryThreshold) {
+		} else if (price / maxPrice <= precomputedShortEntryThreshold) {
 			if (started && increasing) {
-				pivotPrice = maxPrice;
 				minPrice = 1000000;
 				increasing = false;
 				if (e.price == 0.0 && sellVol >= c.sellVolPercentile) {
@@ -134,18 +138,6 @@ __kernel void volTrendTrader(const int numTrades, __global tradeWithoutDate* tra
 			} else if (!started) {
 				started = true;
 				increasing = false;
-			}
-		}
-
-		if (e.price == 0.0) {
-			if (buyVol >= c.buyVolPercentile) {
-				maxProfit = price;
-				e = (entry) {price, true};
-				t += 1;
-			} else if (sellVol >= c.sellVolPercentile) {
-				maxProfit = price;
-				e = (entry) {price, false};
-				t += 1;
 			}
 		}
 	}
