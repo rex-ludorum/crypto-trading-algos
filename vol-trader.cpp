@@ -246,7 +246,7 @@ int main(int argc, char* argv[]) {
 			localTimeTm.tm_isdst = 0;
 			auto tpLocal = system_clock::from_time_t(mktime(&localTimeTm));
 			t.timestamp = duration_cast<microseconds>(tpLocal.time_since_epoch()).count() + ONE_HOUR_MICROSECONDS + micros;
-			trades.emplace_back(t);
+			// trades.emplace_back(t);
 			tradesWithoutDates.emplace_back(convertTrade(t));
 		}
 		myFile.close();
@@ -257,8 +257,6 @@ int main(int argc, char* argv[]) {
 		cout << "Error for inputTrades: " << err << endl;
 		return 1;
 	}
-
-	vector< tuple<int, long long> > timeWindows(NUM_WINDOWS, {0, trades[0].timestamp});
 
 	vector<double> buyVols(NUM_WINDOWS, 0);
 	vector<double> sellVols(NUM_WINDOWS, 0);
@@ -451,11 +449,11 @@ int main(int argc, char* argv[]) {
 	outFile.open("resultsCppPar");
 	if (outFile.is_open()) {
 		for (size_t i = 0; i < comboVect.size(); i++) {
-			outFile << "Time window: " << to_string(comboVect[i].window / ONE_MINUTE_MICROSECONDS) << " minutes" << endl;
-			outFile << "Buy vol threshold: " << to_string(comboVect[i].buyVolPercentile) << endl;
-			outFile << "Sell vol threshold: " << to_string(comboVect[i].sellVolPercentile) << endl;
 			outFile << "Stop loss: " << to_string(comboVect[i].stopLoss) << endl;
 			outFile << "Target: " << to_string(comboVect[i].target) << endl;
+			outFile << "Window: " << to_string(comboVect[i].window / ONE_MINUTE_MICROSECONDS) << " minutes" << endl;
+			outFile << "Buy volume threshold: " << to_string(comboVect[i].buyVolPercentile) << endl;
+			outFile << "Sell volume threshold: " << to_string(comboVect[i].sellVolPercentile) << endl;
 			outFile << "Total trades: " << to_string(finalTotalTrades[i]) << endl;
 			outFile << "Wins: " << to_string(finalWins[i]) << endl;
 			outFile << "Losses: " << to_string(finalLosses[i]) << endl;
@@ -488,8 +486,8 @@ int main(int argc, char* argv[]) {
 		outFile << "Stop loss: " << comboVect[maxElementIdx].stopLoss << endl;
 		outFile << "Target: " << comboVect[maxElementIdx].target << endl;
 		outFile << "Window: " << comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS << " minutes" << endl;
-		outFile << "Buy volume percentile: " << comboVect[maxElementIdx].buyVolPercentile << endl;
-		outFile << "Sell volume percentile: " << comboVect[maxElementIdx].sellVolPercentile << endl;
+		outFile << "Buy volume threshold: " << comboVect[maxElementIdx].buyVolPercentile << endl;
+		outFile << "Sell volume threshold: " << comboVect[maxElementIdx].sellVolPercentile << endl;
 		outFile << "Total trades: " << finalTotalTrades[maxElementIdx] << endl;
 		outFile << "Wins: " << finalWins[maxElementIdx] << endl;
 		outFile << "Losses: " << finalLosses[maxElementIdx] << endl;
@@ -522,8 +520,8 @@ int main(int argc, char* argv[]) {
 	cout << "Stop loss: " << comboVect[maxElementIdx].stopLoss << endl;
 	cout << "Target: " << comboVect[maxElementIdx].target << endl;
 	cout << "Window: " << comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS << " minutes" << endl;
-	cout << "Buy volume percentile: " << comboVect[maxElementIdx].buyVolPercentile << endl;
-	cout << "Sell volume percentile: " << comboVect[maxElementIdx].sellVolPercentile << endl;
+	cout << "Buy volume threshold: " << comboVect[maxElementIdx].buyVolPercentile << endl;
+	cout << "Sell volume threshold: " << comboVect[maxElementIdx].sellVolPercentile << endl;
 	cout << "Total trades: " << finalTotalTrades[maxElementIdx] << endl;
 	cout << "Wins: " << finalWins[maxElementIdx] << endl;
 	cout << "Losses: " << finalLosses[maxElementIdx] << endl;

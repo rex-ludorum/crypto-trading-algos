@@ -42,6 +42,10 @@ using std::cerr;
 using std::endl;
 
 #define ONE_HOUR_MICROSECONDS 3600000000
+#define FIFTEEN_MINUTES_MICROSECONDS 900000000
+#define ONE_MINUTE_MICROSECONDS 60000000
+
+#define NUM_WINDOWS 16
 
 #define MAX_TOTAL_TRADES 42
 
@@ -114,9 +118,9 @@ void initializeDevice() {
 	 * Read OpenCL kernel file as a string.
 	 * */
 #ifdef LIST_TRADES
-	std::ifstream kernel_file("trend-follower-with-trades.cl");
+	std::ifstream kernel_file("vol-trend-trader-with-trades.cl");
 #else
-	std::ifstream kernel_file("trend-follower.cl");
+	std::ifstream kernel_file("vol-trend-trader.cl");
 #endif
 	std::string src(std::istreambuf_iterator<char>(kernel_file), (std::istreambuf_iterator<char>()));
 
@@ -166,6 +170,9 @@ struct __attribute__ ((packed)) tradeWithoutDate {
 };
 
 struct __attribute__ ((packed)) combo {
+	cl_long window;
+	cl_double buyVolPercentile;
+	cl_double sellVolPercentile;
 	cl_double entryThreshold;
 	cl_double stopLoss;
 	cl_double target;
@@ -210,6 +217,10 @@ int main(int argc, char* argv[]) {
 	vector<trade> trades;
 	vector<tradeWithoutDate> tradesWithoutDates;
 
+	vector<long long> windows(NUM_WINDOWS);
+	long long n = 0;
+	generate(windows.begin(), windows.end(), [n] () mutable { return n += FIFTEEN_MINUTES_MICROSECONDS; });
+
 	vector<double> stopLosses(6);
 	double x = 0;
 	generate(stopLosses.begin(), stopLosses.end(), [x] () mutable { return x += 0.5; });
@@ -252,14 +263,60 @@ int main(int argc, char* argv[]) {
 		return 1;
 	}
 
-	auto combos = cartesian_product(entryThresholds, stopLosses, targets);
+	vector<double> buyVols(NUM_WINDOWS, 0);
+	vector<double> sellVols(NUM_WINDOWS, 0);
+
+	vector< vector<double> > buyVolPercentiles;
+	vector< vector<double> > sellVolPercentiles;
+
+	myFile.open("buyPercentiles");
+	if (myFile.is_open()) {
+		string line;
+		while (getline(myFile, line)) {
+			vector<string> splits = split(line);
+			vector<double> rowPercentiles;
+			for (string s : splits) {
+				rowPercentiles.emplace_back(stod(s));
+			}
+			buyVolPercentiles.emplace_back(rowPercentiles);
+		}
+		myFile.close();
+	}
+
+	myFile.open("sellPercentiles");
+	if (myFile.is_open()) {
+		string line;
+		while (getline(myFile, line)) {
+			vector<string> splits = split(line);
+			vector<double> rowPercentiles;
+			for (string s : splits) {
+				rowPercentiles.emplace_back(stod(s));
+			}
+			sellVolPercentiles.emplace_back(rowPercentiles);
+		}
+		myFile.close();
+	}
+
+	vector< vector<long long> > indWindows(NUM_WINDOWS);
+	for (int i = 0; i < NUM_WINDOWS; i++) {
+		indWindows[i] = vector<long long>(1, windows[i]);
+	}
+	auto firstCombo = cartesian_product(indWindows[0], buyVolPercentiles[0], sellVolPercentiles[0], entryThresholds, stopLosses, targets);
+	vector< decltype(firstCombo) > combos;
+	combos.emplace_back(firstCombo);
+
+	for (int i = 1; i < NUM_WINDOWS; i++) {
+		combos.emplace_back(cartesian_product(indWindows[i], buyVolPercentiles[i], sellVolPercentiles[i], entryThresholds, stopLosses, targets));
+	}
 
 	vector<combo> comboVect;
 
-	for (unsigned int j = 0; j < combos.size(); j++) {
-		combo c = {get<0>(combos[j]), get<1>(combos[j]), get<2>(combos[j])};
-		// cout << c.window << " " << c.target << " " << c.stopLoss << " " << c.buyVolPercentile << " " << c.sellVolPercentile << endl;
-		comboVect.emplace_back(c);
+	for (int i = 0; i < NUM_WINDOWS; i++) {
+		for (unsigned int j = 0; j < combos[i].size(); j++) {
+			combo c = {get<0>(combos[i][j]), get<1>(combos[i][j]), get<2>(combos[i][j]), get<3>(combos[i][j]), get<4>(combos[i][j]), get<5>(combos[i][j])};
+			// cout << c.window << " " << c.target << " " << c.stopLoss << " " << c.buyVolPercentile << " " << c.sellVolPercentile << endl;
+			comboVect.emplace_back(c);
+		}
 	}
 	cl::Buffer inputCombos(context, CL_MEM_READ_ONLY | CL_MEM_HOST_NO_ACCESS | CL_MEM_COPY_HOST_PTR, comboVect.size() * sizeof(combo), &comboVect[0], &err);
 	if (err != CL_SUCCESS) {
@@ -295,44 +352,44 @@ int main(int argc, char* argv[]) {
 	}
 #endif
 
-	cl::Kernel trendKernel(program, "trendFollower", &err);
+	cl::Kernel volTrendKernel(program, "volTrendTrader", &err);
 	if (err != CL_SUCCESS) {
-		cout << "Error for creating trendKernel: " << err << endl;
+		cout << "Error for creating volTrendKernel: " << err << endl;
 		return 1;
 	}
 	int s = tradesWithoutDates.size();
-	err = trendKernel.setArg(0, sizeof(int), &s);
+	err = volTrendKernel.setArg(0, sizeof(int), &s);
 	if (err != CL_SUCCESS) {
-		cout << "Error for testKernel setArg 0: " << err << endl;
+		cout << "Error for volTrendKernel setArg 0: " << err << endl;
 	}
-	err = trendKernel.setArg(1, inputTrades);
+	err = volTrendKernel.setArg(1, inputTrades);
 	if (err != CL_SUCCESS) {
-		cout << "Error for testKernel setArg 1: " << err << endl;
+		cout << "Error for volTrendKernel setArg 1: " << err << endl;
 	}
-	err = trendKernel.setArg(2, inputCombos);
+	err = volTrendKernel.setArg(2, inputCombos);
 	if (err != CL_SUCCESS) {
-		cout << "Error for testKernel setArg 2: " << err << endl;
+		cout << "Error for volTrendKernel setArg 2: " << err << endl;
 	}
-	err = trendKernel.setArg(3, capitals);
+	err = volTrendKernel.setArg(3, capitals);
 	if (err != CL_SUCCESS) {
-		cout << "Error for testKernel setArg 3: " << err << endl;
+		cout << "Error for volTrendKernel setArg 3: " << err << endl;
 	}
-	err = trendKernel.setArg(4, totalTrades);
+	err = volTrendKernel.setArg(4, totalTrades);
 	if (err != CL_SUCCESS) {
-		cout << "Error for testKernel setArg 4: " << err << endl;
+		cout << "Error for volTrendKernel setArg 4: " << err << endl;
 	}
-	err = trendKernel.setArg(5, wins);
+	err = volTrendKernel.setArg(5, wins);
 	if (err != CL_SUCCESS) {
-		cout << "Error for testKernel setArg 5: " << err << endl;
+		cout << "Error for volTrendKernel setArg 5: " << err << endl;
 	}
-	err = trendKernel.setArg(6, losses);
+	err = volTrendKernel.setArg(6, losses);
 	if (err != CL_SUCCESS) {
-		cout << "Error for testKernel setArg 6: " << err << endl;
+		cout << "Error for volTrendKernel setArg 6: " << err << endl;
 	}
 #ifdef LIST_TRADES
-	err = trendKernel.setArg(7, entriesAndExitsBuf);
+	err = volTrendKernel.setArg(7, entriesAndExitsBuf);
 	if (err != CL_SUCCESS) {
-		cout << "Error for testKernel setArg 7: " << err << endl;
+		cout << "Error for volTrendKernel setArg 7: " << err << endl;
 	}
 #endif
 
@@ -349,9 +406,9 @@ int main(int argc, char* argv[]) {
 	cout << CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE << endl;
 	*/
 
-	err = queue.enqueueNDRangeKernel(trendKernel, cl::NullRange, cl::NDRange(comboVect.size()));
+	err = queue.enqueueNDRangeKernel(volTrendKernel, cl::NullRange, cl::NDRange(comboVect.size()));
 	if (err != CL_SUCCESS) {
-		cout << "Error for trendKernel: " << err << endl;
+		cout << "Error for volTrendKernel: " << err << endl;
 		return 1;
 	}
 
@@ -399,6 +456,9 @@ int main(int argc, char* argv[]) {
 		for (size_t i = 0; i < comboVect.size(); i++) {
 			outFile << "Stop loss: " << to_string(comboVect[i].stopLoss) << endl;
 			outFile << "Target: " << to_string(comboVect[i].target) << endl;
+			outFile << "Window: " << to_string(comboVect[i].window / ONE_MINUTE_MICROSECONDS) << " minutes" << endl;
+			outFile << "Buy volume threshold: " << to_string(comboVect[i].buyVolPercentile) << endl;
+			outFile << "Sell volume threshold: " << to_string(comboVect[i].sellVolPercentile) << endl;
 			outFile << "Entry threshold: " << to_string(comboVect[i].entryThreshold) << endl;
 			outFile << "Total trades: " << to_string(finalTotalTrades[i]) << endl;
 			outFile << "Wins: " << to_string(finalWins[i]) << endl;
@@ -431,6 +491,9 @@ int main(int argc, char* argv[]) {
 		outFile << "Final capital: " << finalCapitals[maxElementIdx] << endl;
 		outFile << "Stop loss: " << comboVect[maxElementIdx].stopLoss << endl;
 		outFile << "Target: " << comboVect[maxElementIdx].target << endl;
+		outFile << "Window: " << comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS << " minutes" << endl;
+		outFile << "Buy volume threshold: " << comboVect[maxElementIdx].buyVolPercentile << endl;
+		outFile << "Sell volume threshold: " << comboVect[maxElementIdx].sellVolPercentile << endl;
 		outFile << "Entry threshold: " << comboVect[maxElementIdx].entryThreshold << endl;
 		outFile << "Total trades: " << finalTotalTrades[maxElementIdx] << endl;
 		outFile << "Wins: " << finalWins[maxElementIdx] << endl;
@@ -463,6 +526,9 @@ int main(int argc, char* argv[]) {
 	cout << "Final capital: " << finalCapitals[maxElementIdx] << endl;
 	cout << "Stop loss: " << comboVect[maxElementIdx].stopLoss << endl;
 	cout << "Target: " << comboVect[maxElementIdx].target << endl;
+	cout << "Window: " << comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS << " minutes" << endl;
+	cout << "Buy volume threshold: " << comboVect[maxElementIdx].buyVolPercentile << endl;
+	cout << "Sell volume threshold: " << comboVect[maxElementIdx].sellVolPercentile << endl;
 	cout << "Entry threshold: " << comboVect[maxElementIdx].entryThreshold << endl;
 	cout << "Total trades: " << finalTotalTrades[maxElementIdx] << endl;
 	cout << "Wins: " << finalWins[maxElementIdx] << endl;
