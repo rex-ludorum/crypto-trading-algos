@@ -82,6 +82,7 @@ cl::Device getDefaultDevice() {
 	 * */
 	auto platform = platforms.front();
 	std::vector<cl::Device> devices;
+	cout << "Using platform " << platform.getInfo<CL_PLATFORM_NAME>() << endl;
 	platform.getDevices(CL_DEVICE_TYPE_ALL, &devices);
 
 	if (devices.empty()) {
@@ -106,6 +107,7 @@ cl::Device getDefaultDevice() {
 	// return devices.front();
 
 	// Return most powerful device
+	cout << "Using device " << devices[maxIdx].getInfo<CL_DEVICE_NAME>() << endl;
 	return devices[maxIdx];
 }
 
@@ -327,6 +329,7 @@ int main(int argc, char* argv[]) {
 		}
 	}
 
+	/*
 	cout << tradesWithoutDates.size() << endl;
 	cout << tradesWithoutDates.size() * sizeof(tradeWithoutDate) << endl;
 	cout << comboVect.size() << endl;
@@ -335,6 +338,7 @@ int main(int argc, char* argv[]) {
 	cout << comboVect.size() * sizeof(cl_int) << endl;
 	cout << device.getInfo<CL_DEVICE_GLOBAL_MEM_SIZE>() << endl;
 	cout << tradesWithoutDates.size() * sizeof(tradeWithoutDate) + comboVect.size() * sizeof(combo) + comboVect.size() * sizeof(cl_double) + 3 * comboVect.size() * sizeof(cl_int) << endl;
+	*/
 
 	cl::Buffer inputCombos(context, CL_MEM_READ_ONLY | CL_MEM_HOST_NO_ACCESS | CL_MEM_COPY_HOST_PTR, comboVect.size() * sizeof(combo), &comboVect[0], &err);
 	if (err != CL_SUCCESS) {
