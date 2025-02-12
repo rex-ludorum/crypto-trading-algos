@@ -267,13 +267,6 @@ int main(int argc, char* argv[]) {
 		cout << "Time taken to read input: " << (double) duration.count() / 1000000 << " seconds" << endl;
 	}
 
-	cl_int err;
-	cl::Buffer inputTrades(context, CL_MEM_READ_ONLY | CL_MEM_HOST_NO_ACCESS | CL_MEM_COPY_HOST_PTR, tradesWithoutDates.size() * sizeof(tradeWithoutDate), &tradesWithoutDates[0], &err);
-	if (err != CL_SUCCESS) {
-		cout << "Error for inputTrades: " << err << endl;
-		return 1;
-	}
-
 	vector<double> buyVols(NUM_WINDOWS, 0);
 	vector<double> sellVols(NUM_WINDOWS, 0);
 
@@ -306,6 +299,15 @@ int main(int argc, char* argv[]) {
 			sellVolPercentiles.emplace_back(rowPercentiles);
 		}
 		myFile.close();
+	}
+
+	auto beforeSetupTime = high_resolution_clock::now();
+
+	cl_int err;
+	cl::Buffer inputTrades(context, CL_MEM_READ_ONLY | CL_MEM_HOST_NO_ACCESS | CL_MEM_COPY_HOST_PTR, tradesWithoutDates.size() * sizeof(tradeWithoutDate), &tradesWithoutDates[0], &err);
+	if (err != CL_SUCCESS) {
+		cout << "Error for inputTrades: " << err << endl;
+		return 1;
 	}
 
 	vector< vector<long long> > indWindows(NUM_WINDOWS);
@@ -430,6 +432,8 @@ int main(int argc, char* argv[]) {
 	*/
 
 	auto beforeKernelTime = high_resolution_clock::now();
+	auto duration = duration_cast<microseconds>(beforeKernelTime - beforeSetupTime);
+	cout << "Time taken to set up kernel: " << (double) duration.count() / 1000000 << " seconds" << endl;
 
 	err = queue.enqueueNDRangeKernel(volTrendKernel, cl::NullRange, cl::NDRange(comboVect.size()));
 	if (err != CL_SUCCESS) {
@@ -476,7 +480,7 @@ int main(int argc, char* argv[]) {
 	}
 
 	auto afterKernelTime = high_resolution_clock::now();
-	auto duration = duration_cast<microseconds>(afterKernelTime - beforeKernelTime);
+	duration = duration_cast<microseconds>(afterKernelTime - beforeKernelTime);
 	cout << "Time taken to run kernel: " << (double) duration.count() / 1000000 << " seconds" << endl;
 
 #ifdef WRITE_OUTPUT
