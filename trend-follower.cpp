@@ -78,12 +78,14 @@ cl::Device getDefaultDevice() {
 	 * */
 	auto platform = platforms.front();
 	std::vector<cl::Device> devices;
+	cout << "Using platform " << platform.getInfo<CL_PLATFORM_NAME>() << endl;
 	platform.getDevices(CL_DEVICE_TYPE_ALL, &devices);
 
 	if (devices.empty()) {
 		cerr << "No devices found!" << endl;
 		exit(1);
 	}
+	cout << "It has " << devices.size() << " devices" << endl;
 
 	int maxComputeUnits = devices.front().getInfo<CL_DEVICE_MAX_COMPUTE_UNITS>();
 	int maxIdx = 0;
@@ -102,6 +104,7 @@ cl::Device getDefaultDevice() {
 	// return devices.front();
 
 	// Return most powerful device
+	cout << "Using device " << devices[maxIdx].getInfo<CL_DEVICE_NAME>() << endl;
 	return devices[maxIdx];
 }
 

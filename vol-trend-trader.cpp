@@ -89,6 +89,7 @@ cl::Device getDefaultDevice() {
 		cerr << "No devices found!" << endl;
 		exit(1);
 	}
+	cout << "It has " << devices.size() << " devices" << endl;
 
 	int maxComputeUnits = devices.front().getInfo<CL_DEVICE_MAX_COMPUTE_UNITS>();
 	int maxIdx = 0;
