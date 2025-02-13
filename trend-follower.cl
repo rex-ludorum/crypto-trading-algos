@@ -17,10 +17,19 @@ typedef struct __attribute__ ((packed)) entry {
 	bool isLong;
 } entry;
 
-typedef struct __attribute__ ((packed)) timeWindow {
-	int tradeId;
-	long timestamp;
-} timeWindow;
+typedef struct __attribute__ ((packed)) tradeRecord {
+	double capital;
+	int totalTrades;
+	int wins;
+	int losses;
+} tradeRecord;
+
+typedef struct __attribute__ ((packed)) positionData {
+	double maxPrice;
+	double minPrice;
+	bool started;
+	bool increasing;
+} positionData;
 
 __kernel void test(const int g, __global float* ds) {
 	int index = get_global_id(0);
@@ -29,19 +38,20 @@ __kernel void test(const int g, __global float* ds) {
 	printf("%f\n", ds[index]);
 }
 
-__kernel void trendFollower(const int numTrades, __global tradeWithoutDate* trades, __global combo* combos, __global double* capitals, __global int* totalTrades, __global int* wins, __global int* losses) {
+__kernel void trendFollower(const int numTrades, __global tradeWithoutDate* trades, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas) {
 	int index = get_global_id(0);
-	double capital = 1.0;
+	double capital = tradeRecords[index].capital;
 	combo c = combos[index];
 	// printf("%d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool));
 	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
-	int t = 0, l = 0, w = 0;
-	timeWindow tw = {0, 0};
-	entry e = {0, false};
-	double maxPrice = trades[0].price;
-	double minPrice = trades[0].price;
-	bool started = false;
-	bool increasing = false;
+	int t = tradeRecords[index].totalTrades;
+	int l = tradeRecords[index].losses;
+	int w = tradeRecords[index].wins;
+	entry e = entries[index];
+	double maxPrice = positionDatas[index].maxPrice;
+	double minPrice = positionDatas[index].minPrice;
+	bool started = positionDatas[index].started;
+	bool increasing = positionDatas[index].increasing;
 
 	double precomputedTarget = 1 + c.target * 0.01;
 	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
@@ -108,8 +118,7 @@ __kernel void trendFollower(const int numTrades, __global tradeWithoutDate* trad
 		}
 	}
 
-	totalTrades[index] = t;
-	wins[index] = w;
-	losses[index] = l;
-	capitals[index] = capital;
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, t, w, l};
+	positionDatas[index] = (positionData) {maxPrice, minPrice, started, increasing};
 }
