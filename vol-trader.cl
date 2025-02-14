@@ -26,9 +26,12 @@ typedef struct __attribute__ ((packed)) timeWindow {
 
 typedef struct __attribute__ ((packed)) tradeRecord {
 	double capital;
-	int totalTrades;
-	int wins;
-	int losses;
+	int shorts;
+	int shortWins;
+	int shortLosses;
+	int longs;
+	int longWins;
+	int longLosses;
 } tradeRecord;
 
 typedef struct __attribute__ ((packed)) positionData {
@@ -57,9 +60,12 @@ __kernel void volTrader(__global int* numTrades, __global tradeWithoutDate* trad
 	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
 	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
 	// printf("%d\n", numTrades);
-	int t = tradeRecords[index].totalTrades;
-	int l = tradeRecords[index].losses;
-	int w = tradeRecords[index].wins;
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
 	timeWindow tw = {positionDatas[index].tradeId - twBetweenRuns->twTranslation, positionDatas[index].timestamp};
 	double buyVol = positionDatas[index].buyVol;
 	double sellVol = positionDatas[index].sellVol;
@@ -79,18 +85,26 @@ __kernel void volTrader(__global int* numTrades, __global tradeWithoutDate* trad
 			double profitMargin;
 			if (e.isLong) {
 				profitMargin = price / e.price;
+				if (profitMargin >= precomputedTarget) {
+					capital *= profitMargin;
+					e = (entry) {0.0, false};
+					lw += 1;
+				} else if (profitMargin <= precomputedStopLoss) {
+					capital *= profitMargin;
+					e = (entry) {0.0, false};
+					ll += 1;
+				}
 			} else {
 				profitMargin = 2 - price / e.price;
-			}
-
-			if (profitMargin >= precomputedTarget) {
-				capital *= profitMargin;
-				e = (entry) {0.0, false};
-				w += 1;
-			} else if (profitMargin <= precomputedStopLoss) {
-				capital *= profitMargin;
-				e = (entry) {0.0, false};
-				l += 1;
+				if (profitMargin >= precomputedTarget) {
+					capital *= profitMargin;
+					e = (entry) {0.0, false};
+					sw += 1;
+				} else if (profitMargin <= precomputedStopLoss) {
+					capital *= profitMargin;
+					e = (entry) {0.0, false};
+					sl += 1;
+				}
 			}
 		}
 
@@ -113,15 +127,15 @@ __kernel void volTrader(__global int* numTrades, __global tradeWithoutDate* trad
 		if (e.price == 0.0) {
 			if (buyVol >= c.buyVolPercentile) {
 				e = (entry) {price, true};
-				t += 1;
+				ls += 1;
 			} else if (sellVol >= c.sellVolPercentile) {
 				e = (entry) {price, false};
-				t += 1;
+				ss += 1;
 			}
 		}
 	}
 
 	entries[index] = e;
-	tradeRecords[index] = (tradeRecord) {capital, t, w, l};
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
 	positionDatas[index] = (positionData) {tw.timestamp, buyVol, sellVol, tw.tradeId};
 }

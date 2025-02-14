@@ -19,9 +19,12 @@ typedef struct __attribute__ ((packed)) entry {
 
 typedef struct __attribute__ ((packed)) tradeRecord {
 	double capital;
-	int totalTrades;
-	int wins;
-	int losses;
+	int shorts;
+	int shortWins;
+	int shortLosses;
+	int longs;
+	int longWins;
+	int longLosses;
 } tradeRecord;
 
 typedef struct __attribute__ ((packed)) positionData {
@@ -46,9 +49,12 @@ __kernel void trendFollower(__global int* numTrades, __global tradeWithoutDate* 
 	combo c = combos[index];
 	// printf("%d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool));
 	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
-	int t = tradeRecords[index].totalTrades;
-	int l = tradeRecords[index].losses;
-	int w = tradeRecords[index].wins;
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
 	entry e = entries[index];
 	double maxPrice = positionDatas[index].maxPrice;
 	double minPrice = positionDatas[index].minPrice;
@@ -68,18 +74,26 @@ __kernel void trendFollower(__global int* numTrades, __global tradeWithoutDate* 
 			double profitMargin;
 			if (e.isLong) {
 				profitMargin = price / e.price;
+				if (profitMargin >= precomputedTarget) {
+					capital *= profitMargin;
+					e = (entry) {0.0, false};
+					lw += 1;
+				} else if (profitMargin <= precomputedStopLoss) {
+					capital *= profitMargin;
+					e = (entry) {0.0, false};
+					ll += 1;
+				}
 			} else {
 				profitMargin = 2 - price / e.price;
-			}
-
-			if (profitMargin >= precomputedTarget) {
-				capital *= profitMargin;
-				e = (entry) {0.0, false};
-				w += 1;
-			} else if (profitMargin <= precomputedStopLoss) {
-				capital *= profitMargin;
-				e = (entry) {0.0, false};
-				l += 1;
+				if (profitMargin >= precomputedTarget) {
+					capital *= profitMargin;
+					e = (entry) {0.0, false};
+					sw += 1;
+				} else if (profitMargin <= precomputedStopLoss) {
+					capital *= profitMargin;
+					e = (entry) {0.0, false};
+					sl += 1;
+				}
 			}
 		}
 
@@ -99,7 +113,7 @@ __kernel void trendFollower(__global int* numTrades, __global tradeWithoutDate* 
 				increasing = true;
 				if (e.price == 0.0) {
 					e = (entry) {price, true};
-					t += 1;
+					ls += 1;
 				}
 			} else if (!started) {
 				started = true;
@@ -111,7 +125,7 @@ __kernel void trendFollower(__global int* numTrades, __global tradeWithoutDate* 
 				increasing = false;
 				if (e.price == 0.0) {
 					e = (entry) {price, false};
-					t += 1;
+					ss += 1;
 				}
 			} else if (!started) {
 				started = true;
@@ -121,7 +135,7 @@ __kernel void trendFollower(__global int* numTrades, __global tradeWithoutDate* 
 	}
 
 	entries[index] = e;
-	tradeRecords[index] = (tradeRecord) {capital, t, w, l};
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
 	uchar bools = 0;
 	bools |= (uchar) started << STARTED_BIT;
 	bools |= (uchar) increasing << INCREASING_BIT;
