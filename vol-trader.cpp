@@ -55,6 +55,8 @@ using std::endl;
 #define LONG_BIT 2
 #define SHORT_BIT 3
 
+#define INCREMENT 1000000
+
 cl::Device getDefaultDevice();                                    // Return a device found in this OpenCL platform.
 
 void initializeDevice();                                          // Initialize device and compile kernel code.
@@ -170,7 +172,7 @@ struct __attribute__ ((packed)) tradeWithoutDate {
 	cl_double price;
 	cl_double qty;
 	cl_int tradeId;
-	cl_int isBuyerMaker;
+	cl_uchar isBuyerMaker;
 };
 
 struct __attribute__ ((packed)) combo {
@@ -189,7 +191,7 @@ struct __attribute__ ((packed)) entryAndExit {
 
 struct __attribute__ ((packed)) entry {
 	cl_double price;
-	cl_bool isLong;
+	cl_uchar isLong;
 };
 
 struct __attribute__ ((packed)) tradeRecord {
@@ -204,6 +206,11 @@ struct __attribute__ ((packed)) positionData {
 	cl_double buyVol;
 	cl_double sellVol;
 	cl_int tradeId;
+};
+
+struct __attribute__ ((packed)) twMetadata {
+	cl_int twTranslation;
+	cl_int twStart;
 };
 
 tradeWithoutDate convertTrade(const trade& orig) {
@@ -318,9 +325,19 @@ int main(int argc, char* argv[]) {
 	auto beforeSetupTime = high_resolution_clock::now();
 
 	cl_int err;
-	cl::Buffer inputTrades(context, CL_MEM_READ_ONLY | CL_MEM_HOST_NO_ACCESS | CL_MEM_COPY_HOST_PTR, tradesWithoutDates.size() * sizeof(tradeWithoutDate), &tradesWithoutDates[0], &err);
+	cl::Buffer inputTrades(context, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY, INCREMENT * sizeof(tradeWithoutDate), NULL, &err);
 	if (err != CL_SUCCESS) {
 		cout << "Error for inputTrades: " << err << endl;
+		return 1;
+	}
+	cl::Buffer inputSize(context, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY, sizeof(int), NULL, &err);
+	if (err != CL_SUCCESS) {
+		cout << "Error for inputSize: " << err << endl;
+		return 1;
+	}
+	cl::Buffer twBetweenRunData(context, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY, sizeof(twMetadata), NULL, &err);
+	if (err != CL_SUCCESS) {
+		cout << "Error for twBetweenRunData: " << err << endl;
 		return 1;
 	}
 
@@ -346,7 +363,7 @@ int main(int argc, char* argv[]) {
 		}
 	}
 
-	vector<entry> entriesVec(comboVect.size(), {0.0, false});
+	vector<entry> entriesVec(comboVect.size(), {0.0, 0});
 	vector<tradeRecord> tradeRecordsVec(comboVect.size(), {1.0, 0, 0, 0});
 	vector<positionData> positionDatasVec(comboVect.size(), {tradesWithoutDates[0].timestamp, 0.0, 0.0, 0});
 
@@ -384,8 +401,7 @@ int main(int argc, char* argv[]) {
 		cout << "Error for creating volKernel: " << err << endl;
 		return 1;
 	}
-	int s = tradesWithoutDates.size();
-	err = volKernel.setArg(0, sizeof(int), &s);
+	err = volKernel.setArg(0, inputSize);
 	if (err != CL_SUCCESS) {
 		cout << "Error for volKernel setArg 0: " << err << endl;
 	}
@@ -408,6 +424,10 @@ int main(int argc, char* argv[]) {
 	err = volKernel.setArg(5, positionDatas);
 	if (err != CL_SUCCESS) {
 		cout << "Error for volKernel setArg 5: " << err << endl;
+	}
+	err = volKernel.setArg(6, twBetweenRunData);
+	if (err != CL_SUCCESS) {
+		cout << "Error for volKernel setArg 6: " << err << endl;
 	}
 #ifdef LIST_TRADES
 	err = volKernel.setArg(6, entriesAndExitsBuf);
@@ -433,25 +453,65 @@ int main(int argc, char* argv[]) {
 	auto duration = duration_cast<microseconds>(beforeKernelTime - beforeSetupTime);
 	cout << "Time taken to set up kernel: " << (double) duration.count() / 1000000 << " seconds" << endl;
 
-	err = queue.enqueueNDRangeKernel(volKernel, cl::NullRange, cl::NDRange(comboVect.size()));
-	if (err != CL_SUCCESS) {
-		cout << "Error for volKernel: " << err << endl;
-		return 1;
+	size_t currIdx = 0;
+	twMetadata tw = {0, 0};
+
+	while (true) {
+		size_t currSize = min((size_t) INCREMENT, tradesWithoutDates.size() - currIdx);
+		err = queue.enqueueWriteBuffer(inputTrades, CL_FALSE, 0, currSize * sizeof(tradeWithoutDate), &tradesWithoutDates[currIdx]);
+		if (err != CL_SUCCESS) {
+			cout << "Error for enqueueWriteBuffer inputTrades: " << err << endl;
+			return 1;
+		}
+		err = queue.enqueueWriteBuffer(inputSize, CL_FALSE, 0, sizeof(int), &currSize);
+		if (err != CL_SUCCESS) {
+			cout << "Error for enqueueWriteBuffer inputSize: " << err << endl;
+			return 1;
+		}
+		err = queue.enqueueWriteBuffer(twBetweenRunData, CL_FALSE, 0, sizeof(twMetadata), &tw);
+		if (err != CL_SUCCESS) {
+			cout << "Error for enqueueWriteBuffer twBetweenRunData: " << err << endl;
+			return 1;
+		}
+		cout << "Running trades " << currIdx << "-" << currIdx + currSize - 1 << endl;
+		err = queue.enqueueNDRangeKernel(volKernel, cl::NullRange, cl::NDRange(comboVect.size()));
+		if (err != CL_SUCCESS) {
+			cout << "Error for volKernel: " << err << endl;
+			return 1;
+		}
+		err = queue.enqueueReadBuffer(positionDatas, CL_FALSE, 0, comboVect.size() * sizeof(positionData), &positionDatasVec[0]);
+		if (err != CL_SUCCESS) {
+			cout << "Error for reading positionDatas: " << err << endl;
+			return 1;
+		}
+		err = queue.finish();
+		if (err != CL_SUCCESS) {
+			cout << "Error for finish: " << err << endl;
+			return 1;
+		}
+		if (currIdx + currSize >= tradesWithoutDates.size()) break;
+		int minElementIdx = std::min_element(positionDatasVec.begin(), positionDatasVec.end(), [](positionData p1, positionData p2) { return p1.tradeId < p2.tradeId; }) - positionDatasVec.begin();
+		int minTradeId= positionDatasVec[minElementIdx].tradeId;
+		tw.twTranslation = minTradeId;
+		tw.twStart = currSize - minTradeId;
+		currIdx += minTradeId;
 	}
 
-	err = queue.enqueueReadBuffer(entries, CL_TRUE, 0, comboVect.size() * sizeof(entry), &entriesVec[0]);
+	/*
+	err = queue.enqueueReadBuffer(entries, CL_FALSE, 0, comboVect.size() * sizeof(entry), &entriesVec[0]);
 	if (err != CL_SUCCESS) {
 		cout << "Error for reading entries: " << err << endl;
 		return 1;
 	}
-	err = queue.enqueueReadBuffer(tradeRecords, CL_TRUE, 0, comboVect.size() * sizeof(tradeRecord), &tradeRecordsVec[0]);
-	if (err != CL_SUCCESS) {
-		cout << "Error for reading tradeRecords: " << err << endl;
-		return 1;
-	}
-	err = queue.enqueueReadBuffer(positionDatas, CL_TRUE, 0, comboVect.size() * sizeof(positionData), &positionDatasVec[0]);
+	err = queue.enqueueReadBuffer(positionDatas, CL_FALSE, 0, comboVect.size() * sizeof(positionData), &positionDatasVec[0]);
 	if (err != CL_SUCCESS) {
 		cout << "Error for reading positionDatas: " << err << endl;
+		return 1;
+	}
+	*/
+	err = queue.enqueueReadBuffer(tradeRecords, CL_FALSE, 0, comboVect.size() * sizeof(tradeRecord), &tradeRecordsVec[0]);
+	if (err != CL_SUCCESS) {
+		cout << "Error for reading tradeRecords: " << err << endl;
 		return 1;
 	}
 #ifdef LIST_TRADES
@@ -481,10 +541,10 @@ int main(int argc, char* argv[]) {
 			outFile << "Window: " << to_string(comboVect[i].window / ONE_MINUTE_MICROSECONDS) << " minutes" << endl;
 			outFile << "Buy volume threshold: " << to_string(comboVect[i].buyVolPercentile) << endl;
 			outFile << "Sell volume threshold: " << to_string(comboVect[i].sellVolPercentile) << endl;
-			outFile << "Total trades: " << to_string(finalTotalTrades[i]) << endl;
-			outFile << "Wins: " << to_string(finalWins[i]) << endl;
-			outFile << "Losses: " << to_string(finalLosses[i]) << endl;
-			outFile << "Final capital: " << to_string(finalCapitals[i]) << endl;
+			outFile << "Total trades: " << to_string(tradeRecordsVec[i].totalTrades) << endl;
+			outFile << "Wins: " << to_string(tradeRecordsVec[i].wins) << endl;
+			outFile << "Losses: " << to_string(tradeRecordsVec[i].losses) << endl;
+			outFile << "Final capital: " << to_string(tradeRecordsVec[i].capital) << endl;
 #ifdef LIST_TRADES
 			for (int j = 0; j < MAX_TOTAL_TRADES; j++) {
 				entryAndExit e = entriesAndExits[i * MAX_TOTAL_TRADES + j];
@@ -506,18 +566,18 @@ int main(int argc, char* argv[]) {
 #endif
 			outFile << endl;
 		}
-		int maxElementIdx = std::max_element(finalCapitals.begin(), finalCapitals.end()) - finalCapitals.begin();
+		int maxElementIdx = std::max_element(tradeRecordsVec.begin(), tradeRecordsVec.end(), [](tradeRecord t1, tradeRecord t2) { return t1.capital < t2.capital; }) - tradeRecordsVec.begin();
 		outFile << fixed;
 		outFile << "Max return:" << endl;
-		outFile << "Final capital: " << finalCapitals[maxElementIdx] << endl;
+		outFile << "Final capital: " << tradeRecordsVec[maxElementIdx].capital << endl;
 		outFile << "Stop loss: " << comboVect[maxElementIdx].stopLoss << endl;
 		outFile << "Target: " << comboVect[maxElementIdx].target << endl;
 		outFile << "Window: " << comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS << " minutes" << endl;
 		outFile << "Buy volume threshold: " << comboVect[maxElementIdx].buyVolPercentile << endl;
 		outFile << "Sell volume threshold: " << comboVect[maxElementIdx].sellVolPercentile << endl;
-		outFile << "Total trades: " << finalTotalTrades[maxElementIdx] << endl;
-		outFile << "Wins: " << finalWins[maxElementIdx] << endl;
-		outFile << "Losses: " << finalLosses[maxElementIdx] << endl;
+		outFile << "Total trades: " << tradeRecordsVec[maxElementIdx].totalTrades << endl;
+		outFile << "Wins: " << tradeRecordsVec[maxElementIdx].wins << endl;
+		outFile << "Losses: " << tradeRecordsVec[maxElementIdx].losses << endl;
 #ifdef LIST_TRADES
 		for (int j = 0; j < MAX_TOTAL_TRADES; j++) {
 			entryAndExit e = entriesAndExits[maxElementIdx * MAX_TOTAL_TRADES + j];

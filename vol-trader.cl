@@ -3,7 +3,7 @@ typedef struct __attribute__ ((packed)) tradeWithoutDate {
 	double price;
 	double qty;
 	int tradeId;
-	int isBuyerMaker;
+	uchar isBuyerMaker;
 } tradeWithoutDate;
 
 typedef struct __attribute__ ((packed)) combo {
@@ -38,6 +38,11 @@ typedef struct __attribute__ ((packed)) positionData {
 	int tradeId;
 } positionData;
 
+typedef struct __attribute__ ((packed)) twMetadata {
+	int twTranslation;
+	int twStart;
+} twMetadata;
+
 __kernel void test(const int g, __global float* ds) {
 	int index = get_global_id(0);
 	printf("%d\n", index);
@@ -45,7 +50,7 @@ __kernel void test(const int g, __global float* ds) {
 	printf("%f\n", ds[index]);
 }
 
-__kernel void volTrader(const int numTrades, __global tradeWithoutDate* trades, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas) {
+__kernel void volTrader(__global int* numTrades, __global tradeWithoutDate* trades, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas, __global twMetadata* twBetweenRuns) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
 	combo c = combos[index];
@@ -55,7 +60,7 @@ __kernel void volTrader(const int numTrades, __global tradeWithoutDate* trades, 
 	int t = tradeRecords[index].totalTrades;
 	int l = tradeRecords[index].losses;
 	int w = tradeRecords[index].wins;
-	timeWindow tw = {positionDatas[index].tradeId, positionDatas[index].timestamp};
+	timeWindow tw = {positionDatas[index].tradeId - twBetweenRuns->twTranslation, positionDatas[index].timestamp};
 	double buyVol = positionDatas[index].buyVol;
 	double sellVol = positionDatas[index].sellVol;
 	entry e = entries[index];
@@ -63,7 +68,7 @@ __kernel void volTrader(const int numTrades, __global tradeWithoutDate* trades, 
 	double precomputedTarget = 1 + c.target * 0.01;
 	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
 
-	for (int i = 0; i < numTrades; i++) {
+	for (int i = twBetweenRuns->twStart; i < *numTrades; i++) {
 		double vol = trades[i].qty;
 		double price = trades[i].price;
 		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);

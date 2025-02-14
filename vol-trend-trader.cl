@@ -3,7 +3,7 @@ typedef struct __attribute__ ((packed)) tradeWithoutDate {
 	double price;
 	double qty;
 	int tradeId;
-	int isBuyerMaker;
+	uchar isBuyerMaker;
 } tradeWithoutDate;
 
 typedef struct __attribute__ ((packed)) combo {
@@ -39,9 +39,16 @@ typedef struct __attribute__ ((packed)) positionData {
 	double maxPrice;
 	double minPrice;
 	int tradeId;
-	bool started;
-	bool increasing;
+	uchar bools;
 } positionData;
+
+typedef struct __attribute__ ((packed)) twMetadata {
+	int twTranslation;
+	int twStart;
+} twMetadata;
+
+#define STARTED_BIT 0
+#define INCREASING_BIT 1
 
 __kernel void test(const int g, __global float* ds) {
 	int index = get_global_id(0);
@@ -50,7 +57,7 @@ __kernel void test(const int g, __global float* ds) {
 	printf("%f\n", ds[index]);
 }
 
-__kernel void volTrendTrader(const int numTrades, __global tradeWithoutDate* trades, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas) {
+__kernel void volTrendTrader(__global int* numTrades, __global tradeWithoutDate* trades, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas, __global twMetadata* twBetweenRuns) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
 	combo c = combos[index];
@@ -60,15 +67,15 @@ __kernel void volTrendTrader(const int numTrades, __global tradeWithoutDate* tra
 	int t = tradeRecords[index].totalTrades;
 	int l = tradeRecords[index].losses;
 	int w = tradeRecords[index].wins;
-	timeWindow tw = {positionDatas[index].tradeId, positionDatas[index].timestamp};
+	timeWindow tw = {positionDatas[index].tradeId - twBetweenRuns->twTranslation, positionDatas[index].timestamp};
 	double buyVol = positionDatas[index].buyVol;
 	double sellVol = positionDatas[index].sellVol;
 	entry e = entries[index];
 
 	double maxPrice = positionDatas[index].maxPrice;
 	double minPrice = positionDatas[index].minPrice;
-	bool started = positionDatas[index].started;
-	bool increasing = positionDatas[index].increasing;
+	bool started = positionDatas[index].bools & 1 << STARTED_BIT;
+	bool increasing = positionDatas[index].bools & 1 << INCREASING_BIT;
 
 	double precomputedTarget = 1 + c.target * 0.01;
 	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
@@ -76,16 +83,7 @@ __kernel void volTrendTrader(const int numTrades, __global tradeWithoutDate* tra
 	double precomputedLongEntryThreshold = 1 + c.entryThreshold * 0.01;
 	double precomputedShortEntryThreshold = 1 - c.entryThreshold * 0.01;
 
-	for (int i = 0; i < numTrades; i++) {
-		/*
-		if (index == 0) {
-			if ((i & 524287) == 0) {
-				printf("%d\n", i);
-			} else if (i == numTrades - 1) {
-				printf("last\n");
-			}
-		}
-		*/
+	for (int i = twBetweenRuns->twStart; i < *numTrades; i++) {
 		double vol = trades[i].qty;
 		double price = trades[i].price;
 		long microseconds = trades[i].timestamp;
@@ -164,5 +162,8 @@ __kernel void volTrendTrader(const int numTrades, __global tradeWithoutDate* tra
 
 	entries[index] = e;
 	tradeRecords[index] = (tradeRecord) {capital, t, w, l};
-	positionDatas[index] = (positionData) {tw.timestamp, buyVol, sellVol, maxPrice, minPrice, tw.tradeId, started, increasing};
+	uchar bools = 0;
+	bools |= (uchar) started << STARTED_BIT;
+	bools |= (uchar) increasing << INCREASING_BIT;
+	positionDatas[index] = (positionData) {tw.timestamp, buyVol, sellVol, maxPrice, minPrice, tw.tradeId, bools};
 }

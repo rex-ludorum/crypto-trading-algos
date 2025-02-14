@@ -3,7 +3,7 @@ typedef struct __attribute__ ((packed)) tradeWithoutDate {
 	double price;
 	double qty;
 	int tradeId;
-	int isBuyerMaker;
+	uchar isBuyerMaker;
 } tradeWithoutDate;
 
 typedef struct __attribute__ ((packed)) combo {
@@ -27,9 +27,11 @@ typedef struct __attribute__ ((packed)) tradeRecord {
 typedef struct __attribute__ ((packed)) positionData {
 	double maxPrice;
 	double minPrice;
-	bool started;
-	bool increasing;
+	uchar bools;
 } positionData;
+
+#define STARTED_BIT 0
+#define INCREASING_BIT 1
 
 __kernel void test(const int g, __global float* ds) {
 	int index = get_global_id(0);
@@ -38,7 +40,7 @@ __kernel void test(const int g, __global float* ds) {
 	printf("%f\n", ds[index]);
 }
 
-__kernel void trendFollower(const int numTrades, __global tradeWithoutDate* trades, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas) {
+__kernel void trendFollower(__global int* numTrades, __global tradeWithoutDate* trades, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
 	combo c = combos[index];
@@ -50,8 +52,8 @@ __kernel void trendFollower(const int numTrades, __global tradeWithoutDate* trad
 	entry e = entries[index];
 	double maxPrice = positionDatas[index].maxPrice;
 	double minPrice = positionDatas[index].minPrice;
-	bool started = positionDatas[index].started;
-	bool increasing = positionDatas[index].increasing;
+	bool started = positionDatas[index].bools & 1 << STARTED_BIT;
+	bool increasing = positionDatas[index].bools & 1 << INCREASING_BIT;
 
 	double precomputedTarget = 1 + c.target * 0.01;
 	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
@@ -59,7 +61,7 @@ __kernel void trendFollower(const int numTrades, __global tradeWithoutDate* trad
 	double precomputedLongEntryThreshold = 1 + c.entryThreshold * 0.01;
 	double precomputedShortEntryThreshold = 1 - c.entryThreshold * 0.01;
 
-	for (int i = 0; i < numTrades; i++) {
+	for (int i = 0; i < *numTrades; i++) {
 		double price = trades[i].price;
 
 		if (e.price != 0.0) {
@@ -120,5 +122,8 @@ __kernel void trendFollower(const int numTrades, __global tradeWithoutDate* trad
 
 	entries[index] = e;
 	tradeRecords[index] = (tradeRecord) {capital, t, w, l};
-	positionDatas[index] = (positionData) {maxPrice, minPrice, started, increasing};
+	uchar bools = 0;
+	bools |= (uchar) started << STARTED_BIT;
+	bools |= (uchar) increasing << INCREASING_BIT;
+	positionDatas[index] = (positionData) {maxPrice, minPrice, bools};
 }
