@@ -53,6 +53,13 @@ __kernel void test(const int g, __global float* ds) {
 	printf("%f\n", ds[index]);
 }
 
+#define MICROSECONDS_IN_DAY 86400000000
+#define MICROSECONDS_IN_WEEK 604800000000
+#define CME_CLOSE 79200000000
+#define CME_OPEN 82800000000
+#define CME_CLOSE_FRIDAY 165600000000
+#define CME_OPEN_SUNDAY 342000000000
+
 __kernel void volTrader(__global int* numTrades, __global tradeWithoutDate* trades, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas, __global twMetadata* twBetweenRuns) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
@@ -80,30 +87,28 @@ __kernel void volTrader(__global int* numTrades, __global tradeWithoutDate* trad
 		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
 		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
 		long microseconds = trades[i].timestamp;
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
 
 		if (e.price != 0.0) {
 			double profitMargin;
 			if (e.isLong) {
 				profitMargin = price / e.price;
-				if (profitMargin >= precomputedTarget) {
+				if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
 					capital *= profitMargin;
 					e = (entry) {0.0, false};
-					lw += 1;
-				} else if (profitMargin <= precomputedStopLoss) {
-					capital *= profitMargin;
-					e = (entry) {0.0, false};
-					ll += 1;
+					lw += profitMargin >= 1.0;
+					ll += profitMargin < 1.0;
 				}
 			} else {
 				profitMargin = 2 - price / e.price;
-				if (profitMargin >= precomputedTarget) {
+				if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
 					capital *= profitMargin;
 					e = (entry) {0.0, false};
-					sw += 1;
-				} else if (profitMargin <= precomputedStopLoss) {
-					capital *= profitMargin;
-					e = (entry) {0.0, false};
-					sl += 1;
+					sw += profitMargin >= 1.0;
+					sl += profitMargin < 1.0;
 				}
 			}
 		}
@@ -125,10 +130,10 @@ __kernel void volTrader(__global int* numTrades, __global tradeWithoutDate* trad
 		else buyVol += vol;
 
 		if (e.price == 0.0) {
-			if (buyVol >= c.buyVolPercentile) {
+			if (buyVol >= c.buyVolPercentile && !inClose && !onWeekend) {
 				e = (entry) {price, true};
 				ls += 1;
-			} else if (sellVol >= c.sellVolPercentile) {
+			} else if (sellVol >= c.sellVolPercentile && !inClose && !onWeekend) {
 				e = (entry) {price, false};
 				ss += 1;
 			}

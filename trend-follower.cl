@@ -33,8 +33,14 @@ typedef struct __attribute__ ((packed)) positionData {
 	uchar bools;
 } positionData;
 
-#define STARTED_BIT 0
-#define INCREASING_BIT 1
+#define INCREASING_BIT 0
+
+#define MICROSECONDS_IN_DAY 86400000000
+#define MICROSECONDS_IN_WEEK 604800000000
+#define CME_CLOSE 79200000000
+#define CME_OPEN 82800000000
+#define CME_CLOSE_FRIDAY 165600000000
+#define CME_OPEN_SUNDAY 342000000000
 
 __kernel void test(const int g, __global float* ds) {
 	int index = get_global_id(0);
@@ -58,7 +64,6 @@ __kernel void trendFollower(__global int* numTrades, __global tradeWithoutDate* 
 	entry e = entries[index];
 	double maxPrice = positionDatas[index].maxPrice;
 	double minPrice = positionDatas[index].minPrice;
-	bool started = positionDatas[index].bools & 1 << STARTED_BIT;
 	bool increasing = positionDatas[index].bools & 1 << INCREASING_BIT;
 
 	double precomputedTarget = 1 + c.target * 0.01;
@@ -69,67 +74,64 @@ __kernel void trendFollower(__global int* numTrades, __global tradeWithoutDate* 
 
 	for (int i = 0; i < *numTrades; i++) {
 		double price = trades[i].price;
+		long microseconds = trades[i].timestamp;
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
 
 		if (e.price != 0.0) {
 			double profitMargin;
 			if (e.isLong) {
 				profitMargin = price / e.price;
-				if (profitMargin >= precomputedTarget) {
+				if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
 					capital *= profitMargin;
 					e = (entry) {0.0, false};
-					lw += 1;
-				} else if (profitMargin <= precomputedStopLoss) {
-					capital *= profitMargin;
-					e = (entry) {0.0, false};
-					ll += 1;
+					lw += profitMargin >= 1.0;
+					ll += profitMargin < 1.0;
 				}
 			} else {
 				profitMargin = 2 - price / e.price;
-				if (profitMargin >= precomputedTarget) {
+				if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
 					capital *= profitMargin;
 					e = (entry) {0.0, false};
-					sw += 1;
-				} else if (profitMargin <= precomputedStopLoss) {
-					capital *= profitMargin;
-					e = (entry) {0.0, false};
-					sl += 1;
+					sw += profitMargin >= 1.0;
+					sl += profitMargin < 1.0;
 				}
 			}
 		}
 
 		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
 		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
-		if (started) {
-			if (increasing) {
-				maxPrice = max(maxPrice, price);
-			} else {
-				minPrice = min(minPrice, price);
-			}
-		}
-
-		if (price / minPrice >= precomputedLongEntryThreshold) {
-			if (started && !increasing) {
-				maxPrice = 1;
-				increasing = true;
-				if (e.price == 0.0) {
-					e = (entry) {price, true};
-					ls += 1;
-				}
-			} else if (!started) {
-				started = true;
-				increasing = true;
-			}
-		} else if (price / maxPrice <= precomputedShortEntryThreshold) {
-			if (started && increasing) {
+		if (increasing) {
+			maxPrice = max(maxPrice, price);
+			if (price / maxPrice <= precomputedShortEntryThreshold) {
 				minPrice = 1000000;
 				increasing = false;
-				if (e.price == 0.0) {
+				if (e.price == 0.0 && !inClose && !onWeekend) {
 					e = (entry) {price, false};
 					ss += 1;
 				}
-			} else if (!started) {
-				started = true;
-				increasing = false;
+			} else if (price / minPrice >= precomputedLongEntryThreshold) {
+				if (e.price == 0.0 && !inClose && !onWeekend) {
+					e = (entry) {price, true};
+					ls += 1;
+				}
+			}
+		} else {
+			minPrice = min(minPrice, price);
+			if (price / minPrice >= precomputedLongEntryThreshold) {
+				maxPrice = 1;
+				increasing = true;
+				if (e.price == 0.0 && !inClose && !onWeekend) {
+					e = (entry) {price, true};
+					ls += 1;
+				}
+			} else if (price / maxPrice <= precomputedShortEntryThreshold) {
+				if (e.price == 0.0 && !inClose && !onWeekend) {
+					e = (entry) {price, false};
+					ss += 1;
+				}
 			}
 		}
 	}
@@ -137,7 +139,6 @@ __kernel void trendFollower(__global int* numTrades, __global tradeWithoutDate* 
 	entries[index] = e;
 	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
 	uchar bools = 0;
-	bools |= (uchar) started << STARTED_BIT;
 	bools |= (uchar) increasing << INCREASING_BIT;
 	positionDatas[index] = (positionData) {maxPrice, minPrice, bools};
 }
