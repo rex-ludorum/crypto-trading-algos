@@ -1,5 +1,5 @@
 #include <algorithm>
-#include <CL/cl2.hpp>
+#include <CL/opencl.hpp>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -52,8 +52,8 @@ using std::endl;
 
 #define LOSS_BIT 0
 #define WIN_BIT 1
-#define LONG_BIT 2
-#define SHORT_BIT 3
+#define LONG_POS_BIT 2
+#define SHORT_POS_BIT 3
 
 #define INCREMENT 1000000
 
@@ -536,7 +536,7 @@ int main(int argc, char* argv[]) {
 
 #ifdef WRITE_OUTPUT
 	ofstream outFile;
-	outFile.open("resultsCppPar");
+	outFile.open("resultsVol");
 	if (outFile.is_open()) {
 		for (size_t i = 0; i < comboVect.size(); i++) {
 			outFile << "Stop loss: " << to_string(comboVect[i].stopLoss) << endl;
@@ -559,9 +559,9 @@ int main(int argc, char* argv[]) {
 				entryAndExit e = entriesAndExits[i * MAX_TOTAL_TRADES + j];
 				if (e.entryIndex == 0) break;
 				else {
-					if (e.longShortWinLoss & (1 << LONG_BIT)) {
+					if (e.longShortWinLoss & (1 << LONG_POS_BIT)) {
 						outFile << "LONG ";
-					} else if (e.longShortWinLoss & (1 << SHORT_BIT)) {
+					} else if (e.longShortWinLoss & (1 << SHORT_POS_BIT)) {
 						outFile << "SHORT ";
 					}
 					outFile << to_string(trades[e.entryIndex].price) << " " << trades[e.entryIndex].date << " " << to_string(trades[e.entryIndex].tradeId) << endl;
@@ -598,9 +598,9 @@ int main(int argc, char* argv[]) {
 			entryAndExit e = entriesAndExits[maxElementIdx * MAX_TOTAL_TRADES + j];
 			if (e.entryIndex == 0) break;
 			else {
-				if (e.longShortWinLoss & (1 << LONG_BIT)) {
+				if (e.longShortWinLoss & (1 << LONG_POS_BIT)) {
 					outFile << "LONG ";
-				} else if (e.longShortWinLoss & (1 << SHORT_BIT)) {
+				} else if (e.longShortWinLoss & (1 << SHORT_POS_BIT)) {
 					outFile << "SHORT ";
 				}
 				outFile << to_string(trades[e.entryIndex].price) << " " << trades[e.entryIndex].date << " " << to_string(trades[e.entryIndex].tradeId) << endl;
