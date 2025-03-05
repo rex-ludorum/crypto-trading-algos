@@ -109,25 +109,19 @@ __kernel void volTrendTrader(__global int* numTrades, __global tradeWithoutDate*
 			double profitMargin;
 			if (e.isLong) {
 				profitMargin = price / e.price;
-				if (profitMargin >= precomputedTarget) {
+				if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
 					capital *= profitMargin;
 					e = (entry) {0.0, false};
-					lw += 1;
-				} else if (profitMargin <= precomputedStopLoss) {
-					capital *= profitMargin;
-					e = (entry) {0.0, false};
-					ll += 1;
+					lw += profitMargin >= 1.0;
+					ll += profitMargin < 1.0;
 				}
 			} else {
 				profitMargin = 2 - price / e.price;
-				if (profitMargin >= precomputedTarget) {
+				if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
 					capital *= profitMargin;
 					e = (entry) {0.0, false};
-					sw += 1;
-				} else if (profitMargin <= precomputedStopLoss) {
-					capital *= profitMargin;
-					e = (entry) {0.0, false};
-					sl += 1;
+					sw += profitMargin >= 1.0;
+					sl += profitMargin < 1.0;
 				}
 			}
 		}
