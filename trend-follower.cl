@@ -35,6 +35,7 @@ typedef struct __attribute__ ((packed)) positionData {
 
 #define INCREASING_BIT 0
 
+#define MICROSECONDS_IN_HOUR 3600000000
 #define MICROSECONDS_IN_DAY 86400000000
 #define MICROSECONDS_IN_WEEK 604800000000
 #define CME_CLOSE 79200000000
@@ -42,11 +43,43 @@ typedef struct __attribute__ ((packed)) positionData {
 #define CME_CLOSE_FRIDAY 165600000000
 #define CME_OPEN_SUNDAY 342000000000
 
+#define MARCH_1_1972_IN_SECONDS 68256000
+
 __kernel void test(const int g, __global float* ds) {
 	int index = get_global_id(0);
 	printf("%d\n", index);
 	ds[index] = 5;
 	printf("%f\n", ds[index]);
+}
+
+inline int isDST(long ts) {
+	int timestamp = ts / 1000000;
+	int leapYearCycles = (timestamp - MARCH_1_1972_IN_SECONDS) / ((365 * 4 + 1) * 86400);
+	int days = (timestamp - MARCH_1_1972_IN_SECONDS) / 86400;
+	int daysInCurrentCycle = days % (365 * 4 + 1);
+	int yearsInCurrentCycle = daysInCurrentCycle / 365;
+	int daysInCurrentYear = daysInCurrentCycle % 365;
+
+	int timeInCurrentDay = timestamp % 86400;
+
+	int marchFirstDayOfWeekInCurrentCycle = leapYearCycles * (365 * 4 + 1) % 7;
+	int marchFirstDayOfWeekInCurrentYear = (marchFirstDayOfWeekInCurrentCycle + yearsInCurrentCycle * 365) % 7;
+
+	int dstStart = 0;
+	if (marchFirstDayOfWeekInCurrentYear > 4) {
+		dstStart = 11 - marchFirstDayOfWeekInCurrentYear + 7;
+	} else {
+		dstStart = 4 - marchFirstDayOfWeekInCurrentYear + 7;
+	}
+	int dstEnd = dstStart + 238;
+
+	if (daysInCurrentYear == dstStart) {
+		return timeInCurrentDay >= 7200;
+	} else if (daysInCurrentYear == dstEnd) {
+		return timeInCurrentDay < 7200;
+	} else {
+		return daysInCurrentYear > dstStart && daysInCurrentYear < dstEnd;
+	}
 }
 
 __kernel void trendFollower(__global int* numTrades, __global tradeWithoutDate* trades, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas) {
@@ -75,8 +108,9 @@ __kernel void trendFollower(__global int* numTrades, __global tradeWithoutDate* 
 	for (int i = 0; i < *numTrades; i++) {
 		double price = trades[i].price;
 		long microseconds = trades[i].timestamp;
-		long dayRemainder = microseconds % MICROSECONDS_IN_DAY;
-		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
 		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
 		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
 
