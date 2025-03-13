@@ -284,7 +284,7 @@ int main(int argc, char* argv[]) {
 				micros /= 1000;
 				localTimeTm.tm_isdst = 0;
 				auto tpLocal = system_clock::from_time_t(mktime(&localTimeTm));
-				t.timestamp = duration_cast<microseconds>(tpLocal.time_since_epoch()).count() + ONE_HOUR_MICROSECONDS + micros;
+				t.timestamp = duration_cast<microseconds>(tpLocal.time_since_epoch()).count() + micros;
 				// trades.emplace_back(t);
 				tradesWithoutDates.emplace_back(convertTrade(t));
 			}
