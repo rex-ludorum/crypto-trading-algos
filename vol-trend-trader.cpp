@@ -249,7 +249,13 @@ int main(int argc, char* argv[]) {
 	auto startTime = high_resolution_clock::now();
 
 	initializeDevice();
+
+#if defined(__WIN64)
 	_putenv("TZ=/usr/share/zoneinfo/UTC");
+#elif defined(__linux)
+	putenv("TZ=/usr/share/zoneinfo/UTC");
+#endif
+
 	ifstream myFile;
 	vector<trade> trades;
 	vector<tradeWithoutDate> tradesWithoutDates;
@@ -262,7 +268,7 @@ int main(int argc, char* argv[]) {
 	double x = 0;
 	generate(stopLosses.begin(), stopLosses.end(), [x] () mutable { return x += 0.5; });
 
-	vector<double> targets(15);
+	vector<double> targets(9);
 	x = 0.5;
 	generate(targets.begin(), targets.end(), [x] () mutable { return x += 0.5; });
 
