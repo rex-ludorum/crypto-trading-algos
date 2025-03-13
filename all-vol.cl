@@ -170,7 +170,7 @@ __kernel void volTrader(__global int* numTrades, __global tradeWithoutDate* trad
 			if (buyVol >= c.buyVolPercentile && volDelta >= c.buyDeltaPercentile && !inClose && !onWeekend) {
 				e = (entry) {price, true};
 				ls += 1;
-			} else if (sellVol >= c.sellVolPercentile && volDelta <= c.sellDeltaPercentile !inClose && !onWeekend) {
+			} else if (sellVol >= c.sellVolPercentile && volDelta <= c.sellDeltaPercentile && !inClose && !onWeekend) {
 				e = (entry) {price, false};
 				ss += 1;
 			}
