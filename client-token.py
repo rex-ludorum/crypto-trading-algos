@@ -1,4 +1,5 @@
 import boto3
+import json
 import time
 import traceback
 import os
@@ -12,14 +13,14 @@ AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
 
 REGION_NAME = "us-east-2"
 
-START_DATE = "2024-07-22 02:00:00.000000000"
-END_DATE = "2024-11-08 02:00:00.000000000"
+START_DATE = "2024-07-17 22:28:47"
+END_DATE = "2024-07-18 00:12:55"
 CLIENT_TOKEN = "clientTokenClientTokenClientToken1"
 
 def getFirstNextToken():
 	queryClient = boto3.client('timestream-query', region_name=REGION_NAME, aws_access_key_id=ACCESS_KEY, aws_secret_access_key=AWS_SECRET_ACCESS_KEY)
 	try:
-		queryString = 'SELECT * FROM "coinbase-websocket-data"."%s" WHERE time between date(TIMESTAMP \'%s\') and date(TIMESTAMP \'%s\') ORDER BY time asc' % (symbol, START_DATE, END_DATE)
+		queryString = 'SELECT * FROM "coinbase-websocket-data"."%s" WHERE time between TIMESTAMP \'%s\' and TIMESTAMP \'%s\' ORDER BY time asc' % (symbol, START_DATE, END_DATE)
 		print("Querying %s with query %s and ClientToken %s at %s" % (symbol, queryString, CLIENT_TOKEN, str(datetime.datetime.now())))
 		response = queryClient.query(
 			QueryString=queryString,
@@ -88,7 +89,12 @@ def saveToFile():
 		return
 	queryId = response["QueryId"]
 	print("QueryId: " + queryId)
-	nextToken = response["NextToken"]
+	if "NextToken" not in response:
+		print("No NextToken:")
+		print(json.dumps(response, indent=2))
+		return
+	else:
+		nextToken = response["NextToken"]
 	with open('%s_%s_%s' % (symbol, START_DATE.replace(" ", "-").replace(":", "."), END_DATE.replace(" ", "-").replace(":", ".")), 'w') as file:
 		response = pullData(nextToken)
 		if not checkResponse(response, queryId):
