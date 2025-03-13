@@ -20,7 +20,6 @@ CLIENT_TOKEN = "clientTokenClientTokenClientToken1"
 def getFirstNextToken():
 	queryClient = boto3.client('timestream-query', region_name=REGION_NAME, aws_access_key_id=ACCESS_KEY, aws_secret_access_key=AWS_SECRET_ACCESS_KEY)
 	try:
-		queryString = 'SELECT * FROM "coinbase-websocket-data"."%s" WHERE time between TIMESTAMP \'%s\' and TIMESTAMP \'%s\' ORDER BY time asc' % (symbol, START_DATE, END_DATE)
 		print("Querying %s with query %s and ClientToken %s at %s" % (symbol, queryString, CLIENT_TOKEN, str(datetime.datetime.now())))
 		response = queryClient.query(
 			QueryString=queryString,
@@ -35,7 +34,6 @@ def getFirstNextToken():
 
 def pullData(nextToken):
 	try:
-		queryString = 'SELECT * FROM "coinbase-websocket-data"."%s" WHERE time between date(TIMESTAMP \'%s\') and date(TIMESTAMP \'%s\') ORDER BY time asc' % (symbol, START_DATE, END_DATE)
 		print("Querying %s at %s" % (symbol, str(datetime.datetime.now())))
 		response = queryClient.query(
 			QueryString=queryString,
@@ -128,6 +126,7 @@ parser = argparse.ArgumentParser(description='Retrieve trading data from AWS Tim
 parser.add_argument('symbol', help='the trading pair to collect data from', choices=['BTC-USD', 'ETH-USD'])
 args = parser.parse_args()
 symbol = vars(args)['symbol']
+queryString = 'SELECT * FROM "coinbase-websocket-data"."%s" WHERE time between TIMESTAMP \'%s\' and TIMESTAMP \'%s\' ORDER BY time asc' % (symbol, START_DATE, END_DATE)
 
 queryClient = boto3.client('timestream-query', region_name=REGION_NAME, aws_access_key_id=ACCESS_KEY, aws_secret_access_key=AWS_SECRET_ACCESS_KEY)
 
