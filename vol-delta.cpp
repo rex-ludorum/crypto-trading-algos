@@ -177,8 +177,8 @@ struct __attribute__ ((packed)) tradeWithoutDate {
 
 struct __attribute__ ((packed)) combo {
 	cl_long window;
-	cl_double buyVolPercentile;
-	cl_double sellVolPercentile;
+	cl_double buyDeltaPercentile;
+	cl_double sellDeltaPercentile;
 	cl_double stopLoss;
 	cl_double target;
 };
@@ -294,10 +294,9 @@ int main(int argc, char* argv[]) {
 	auto duration = duration_cast<microseconds>(fileTime - startTime);
 	cout << "Time taken to read input: " << (double) duration.count() / 1000000 << " seconds" << endl;
 
-	vector< vector<double> > buyVolPercentiles;
-	vector< vector<double> > sellVolPercentiles;
+	vector< vector<double> > volDeltaPercentiles;
 
-	myFile.open("buyPercentiles");
+	myFile.open("volDeltas");
 	if (myFile.is_open()) {
 		string line;
 		while (getline(myFile, line)) {
@@ -306,21 +305,7 @@ int main(int argc, char* argv[]) {
 			for (string s : splits) {
 				rowPercentiles.emplace_back(stod(s));
 			}
-			buyVolPercentiles.emplace_back(rowPercentiles);
-		}
-		myFile.close();
-	}
-
-	myFile.open("sellPercentiles");
-	if (myFile.is_open()) {
-		string line;
-		while (getline(myFile, line)) {
-			vector<string> splits = split(line);
-			vector<double> rowPercentiles;
-			for (string s : splits) {
-				rowPercentiles.emplace_back(stod(s));
-			}
-			sellVolPercentiles.emplace_back(rowPercentiles);
+			volDeltaPercentiles.emplace_back(rowPercentiles);
 		}
 		myFile.close();
 	}
@@ -348,12 +333,12 @@ int main(int argc, char* argv[]) {
 	for (int i = 0; i < NUM_WINDOWS; i++) {
 		indWindows[i] = vector<long long>(1, windows[i]);
 	}
-	auto firstCombo = cartesian_product(indWindows[0], buyVolPercentiles[0], sellVolPercentiles[0], stopLosses, targets);
+	auto firstCombo = cartesian_product(indWindows[0], volDeltaPercentiles[0], volDeltaPercentiles[0], stopLosses, targets);
 	vector< decltype(firstCombo) > combos;
 	combos.emplace_back(firstCombo);
 
 	for (int i = 1; i < NUM_WINDOWS; i++) {
-		combos.emplace_back(cartesian_product(indWindows[i], buyVolPercentiles[i], sellVolPercentiles[i], stopLosses, targets));
+		combos.emplace_back(cartesian_product(indWindows[i], volDeltaPercentiles[i], volDeltaPercentiles[i], stopLosses, targets));
 	}
 
 	vector<combo> comboVect;
@@ -536,14 +521,14 @@ int main(int argc, char* argv[]) {
 
 #ifdef WRITE_OUTPUT
 	ofstream outFile;
-	outFile.open("resultsVol");
+	outFile.open("resultsVolDelta");
 	if (outFile.is_open()) {
 		for (size_t i = 0; i < comboVect.size(); i++) {
 			outFile << "Stop loss: " << to_string(comboVect[i].stopLoss) << endl;
 			outFile << "Target: " << to_string(comboVect[i].target) << endl;
 			outFile << "Window: " << to_string(comboVect[i].window / ONE_MINUTE_MICROSECONDS) << " minutes" << endl;
-			outFile << "Buy volume threshold: " << to_string(comboVect[i].buyVolPercentile) << endl;
-			outFile << "Sell volume threshold: " << to_string(comboVect[i].sellVolPercentile) << endl;
+			outFile << "Buy delta threshold: " << to_string(comboVect[i].buyDeltaPercentile) << endl;
+			outFile << "Sell delta threshold: " << to_string(comboVect[i].sellDeltaPercentile) << endl;
 			outFile << "Total trades: " << to_string(tradeRecordsVec[i].shorts + tradeRecordsVec[i].longs) << endl;
 			outFile << "Wins: " << to_string(tradeRecordsVec[i].shortWins + tradeRecordsVec[i].longWins) << endl;
 			outFile << "Losses: " << to_string(tradeRecordsVec[i].shortLosses + tradeRecordsVec[i].longLosses) << endl;
@@ -582,8 +567,8 @@ int main(int argc, char* argv[]) {
 		outFile << "Stop loss: " << comboVect[maxElementIdx].stopLoss << endl;
 		outFile << "Target: " << comboVect[maxElementIdx].target << endl;
 		outFile << "Window: " << comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS << " minutes" << endl;
-		outFile << "Buy volume threshold: " << comboVect[maxElementIdx].buyVolPercentile << endl;
-		outFile << "Sell volume threshold: " << comboVect[maxElementIdx].sellVolPercentile << endl;
+		outFile << "Buy delta threshold: " << comboVect[maxElementIdx].buyDeltaPercentile << endl;
+		outFile << "Sell delta threshold: " << comboVect[maxElementIdx].sellDeltaPercentile << endl;
 		outFile << "Total trades: " << tradeRecordsVec[maxElementIdx].shorts + tradeRecordsVec[maxElementIdx].longs << endl;
 		outFile << "Wins: " << tradeRecordsVec[maxElementIdx].shortWins + tradeRecordsVec[maxElementIdx].longWins << endl;
 		outFile << "Losses: " << tradeRecordsVec[maxElementIdx].shortLosses + tradeRecordsVec[maxElementIdx].longLosses << endl;
@@ -627,8 +612,8 @@ int main(int argc, char* argv[]) {
 	cout << "Stop loss: " << comboVect[maxElementIdx].stopLoss << endl;
 	cout << "Target: " << comboVect[maxElementIdx].target << endl;
 	cout << "Window: " << comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS << " minutes" << endl;
-	cout << "Buy volume threshold: " << comboVect[maxElementIdx].buyVolPercentile << endl;
-	cout << "Sell volume threshold: " << comboVect[maxElementIdx].sellVolPercentile << endl;
+	cout << "Buy delta threshold: " << comboVect[maxElementIdx].buyDeltaPercentile << endl;
+	cout << "Sell delta threshold: " << comboVect[maxElementIdx].sellDeltaPercentile << endl;
 	cout << "Total trades: " << tradeRecordsVec[maxElementIdx].shorts + tradeRecordsVec[maxElementIdx].longs << endl;
 	cout << "Wins: " << tradeRecordsVec[maxElementIdx].shortWins + tradeRecordsVec[maxElementIdx].longWins << endl;
 	cout << "Losses: " << tradeRecordsVec[maxElementIdx].shortLosses + tradeRecordsVec[maxElementIdx].longLosses << endl;

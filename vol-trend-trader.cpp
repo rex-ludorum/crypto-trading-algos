@@ -302,9 +302,6 @@ int main(int argc, char* argv[]) {
 	auto duration = duration_cast<microseconds>(fileTime - startTime);
 	cout << "Time taken to read input: " << (double) duration.count() / 1000000 << " seconds" << endl;
 
-	vector<double> buyVols(NUM_WINDOWS, 0);
-	vector<double> sellVols(NUM_WINDOWS, 0);
-
 	vector< vector<double> > buyVolPercentiles;
 	vector< vector<double> > sellVolPercentiles;
 
