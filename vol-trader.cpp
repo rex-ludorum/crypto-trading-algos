@@ -247,7 +247,6 @@ int main(int argc, char* argv[]) {
 	initializeDevice();
 	_putenv("TZ=/usr/share/zoneinfo/UTC");
 	ifstream myFile;
-	myFile.open(argv[1]);
 	vector<trade> trades;
 	vector<tradeWithoutDate> tradesWithoutDates;
 
@@ -263,33 +262,37 @@ int main(int argc, char* argv[]) {
 	x = 0.5;
 	generate(targets.begin(), targets.end(), [x] () mutable { return x += 0.5; });
 
-	if (myFile.is_open()) {
-		string line;
-		while (getline(myFile, line)) {
-			vector<string> splits = split(line);
-			trade t;
-			t.tradeId = stoi(splits[0]);
-			t.price = stod(splits[3]);
-			t.qty = stod(splits[4]);
-			istringstream(splits[5]) >> boolalpha >> t.isBuyerMaker;
-			string date = splits[1] + "T" + splits[2];
-			t.date = date;
-			tm localTimeTm;
-			int micros;
-			istringstream(date) >> get_time(&localTimeTm, "%Y-%m-%dT%H:%M:%S.") >> micros;
-			micros /= 1000;
-			localTimeTm.tm_isdst = 0;
-			auto tpLocal = system_clock::from_time_t(mktime(&localTimeTm));
-			t.timestamp = duration_cast<microseconds>(tpLocal.time_since_epoch()).count() + ONE_HOUR_MICROSECONDS + micros;
-			// trades.emplace_back(t);
-			tradesWithoutDates.emplace_back(convertTrade(t));
+	for (int i = 1; i < argc; i++) {
+		myFile.open(argv[i]);
+		if (myFile.is_open()) {
+			cout << "Reading " << argv[i] << endl;
+			string line;
+			while (getline(myFile, line)) {
+				vector<string> splits = split(line);
+				trade t;
+				t.tradeId = stoi(splits[0]);
+				t.price = stod(splits[3]);
+				t.qty = stod(splits[4]);
+				istringstream(splits[5]) >> boolalpha >> t.isBuyerMaker;
+				string date = splits[1] + "T" + splits[2];
+				t.date = date;
+				tm localTimeTm;
+				int micros;
+				istringstream(date) >> get_time(&localTimeTm, "%Y-%m-%dT%H:%M:%S.") >> micros;
+				micros /= 1000;
+				localTimeTm.tm_isdst = 0;
+				auto tpLocal = system_clock::from_time_t(mktime(&localTimeTm));
+				t.timestamp = duration_cast<microseconds>(tpLocal.time_since_epoch()).count() + ONE_HOUR_MICROSECONDS + micros;
+				// trades.emplace_back(t);
+				tradesWithoutDates.emplace_back(convertTrade(t));
+			}
+			myFile.close();
 		}
-		myFile.close();
-
-		auto fileTime = high_resolution_clock::now();
-		auto duration = duration_cast<microseconds>(fileTime - startTime);
-		cout << "Time taken to read input: " << (double) duration.count() / 1000000 << " seconds" << endl;
 	}
+
+	auto fileTime = high_resolution_clock::now();
+	auto duration = duration_cast<microseconds>(fileTime - startTime);
+	cout << "Time taken to read input: " << (double) duration.count() / 1000000 << " seconds" << endl;
 
 	vector<double> buyVols(NUM_WINDOWS, 0);
 	vector<double> sellVols(NUM_WINDOWS, 0);
@@ -453,7 +456,7 @@ int main(int argc, char* argv[]) {
 	*/
 
 	auto beforeKernelTime = high_resolution_clock::now();
-	auto duration = duration_cast<microseconds>(beforeKernelTime - beforeSetupTime);
+	duration = duration_cast<microseconds>(beforeKernelTime - beforeSetupTime);
 	cout << "Time taken to set up kernel: " << (double) duration.count() / 1000000 << " seconds" << endl;
 
 	size_t currIdx = 0;
