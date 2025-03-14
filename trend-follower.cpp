@@ -521,6 +521,24 @@ int main(int argc, char* argv[]) {
 		outFile << "Shorts: " << tradeRecordsVec[maxElementIdx].shorts << endl;
 		outFile << "Short wins: " << tradeRecordsVec[maxElementIdx].shortWins << endl;
 		outFile << "Short losses: " << tradeRecordsVec[maxElementIdx].shortLosses << endl;
+
+		maxElementIdx = std::max_element(tradeRecordsVec.begin(), tradeRecordsVec.end(), [](tradeRecord t1, tradeRecord t2) { return t1.shorts + t1.longs < t2.shorts + t2.longs; }) - tradeRecordsVec.begin();
+		outFile << "Most trades:" << endl;
+		outFile << "Final capital: " << tradeRecordsVec[maxElementIdx].capital << endl;
+		outFile << "Stop loss: " << comboVect[maxElementIdx].stopLoss << endl;
+		outFile << "Target: " << comboVect[maxElementIdx].target << endl;
+		outFile << "Window: " << comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS << " minutes" << endl;
+		outFile << "Buy volume threshold: " << comboVect[maxElementIdx].buyVolPercentile << endl;
+		outFile << "Sell volume threshold: " << comboVect[maxElementIdx].sellVolPercentile << endl;
+		outFile << "Total trades: " << tradeRecordsVec[maxElementIdx].shorts + tradeRecordsVec[maxElementIdx].longs << endl;
+		outFile << "Wins: " << tradeRecordsVec[maxElementIdx].shortWins + tradeRecordsVec[maxElementIdx].longWins << endl;
+		outFile << "Losses: " << tradeRecordsVec[maxElementIdx].shortLosses + tradeRecordsVec[maxElementIdx].longLosses << endl;
+		outFile << "Longs: " << tradeRecordsVec[maxElementIdx].longs << endl;
+		outFile << "Long wins: " << tradeRecordsVec[maxElementIdx].longWins << endl;
+		outFile << "Long losses: " << tradeRecordsVec[maxElementIdx].longLosses << endl;
+		outFile << "Shorts: " << tradeRecordsVec[maxElementIdx].shorts << endl;
+		outFile << "Short wins: " << tradeRecordsVec[maxElementIdx].shortWins << endl;
+		outFile << "Short losses: " << tradeRecordsVec[maxElementIdx].shortLosses << endl;
 #ifdef LIST_TRADES
 		for (int j = 0; j < MAX_TOTAL_TRADES; j++) {
 			entryAndExit e = entriesAndExits[maxElementIdx * MAX_TOTAL_TRADES + j];
@@ -555,6 +573,24 @@ int main(int argc, char* argv[]) {
 	cout << "Stop loss: " << comboVect[maxElementIdx].stopLoss << endl;
 	cout << "Target: " << comboVect[maxElementIdx].target << endl;
 	cout << "Entry threshold: " << comboVect[maxElementIdx].entryThreshold << endl;
+	cout << "Total trades: " << tradeRecordsVec[maxElementIdx].shorts + tradeRecordsVec[maxElementIdx].longs << endl;
+	cout << "Wins: " << tradeRecordsVec[maxElementIdx].shortWins + tradeRecordsVec[maxElementIdx].longWins << endl;
+	cout << "Losses: " << tradeRecordsVec[maxElementIdx].shortLosses + tradeRecordsVec[maxElementIdx].longLosses << endl;
+	cout << "Longs: " << tradeRecordsVec[maxElementIdx].longs << endl;
+	cout << "Long wins: " << tradeRecordsVec[maxElementIdx].longWins << endl;
+	cout << "Long losses: " << tradeRecordsVec[maxElementIdx].longLosses << endl;
+	cout << "Shorts: " << tradeRecordsVec[maxElementIdx].shorts << endl;
+	cout << "Short wins: " << tradeRecordsVec[maxElementIdx].shortWins << endl;
+	cout << "Short losses: " << tradeRecordsVec[maxElementIdx].shortLosses << endl;
+
+	maxElementIdx = std::max_element(tradeRecordsVec.begin(), tradeRecordsVec.end(), [](tradeRecord t1, tradeRecord t2) { return t1.shorts + t1.longs < t2.shorts + t2.longs; }) - tradeRecordsVec.begin();
+	cout << "Most trades:" << endl;
+	cout << "Final capital: " << tradeRecordsVec[maxElementIdx].capital << endl;
+	cout << "Stop loss: " << comboVect[maxElementIdx].stopLoss << endl;
+	cout << "Target: " << comboVect[maxElementIdx].target << endl;
+	cout << "Window: " << comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS << " minutes" << endl;
+	cout << "Buy volume threshold: " << comboVect[maxElementIdx].buyVolPercentile << endl;
+	cout << "Sell volume threshold: " << comboVect[maxElementIdx].sellVolPercentile << endl;
 	cout << "Total trades: " << tradeRecordsVec[maxElementIdx].shorts + tradeRecordsVec[maxElementIdx].longs << endl;
 	cout << "Wins: " << tradeRecordsVec[maxElementIdx].shortWins + tradeRecordsVec[maxElementIdx].longWins << endl;
 	cout << "Losses: " << tradeRecordsVec[maxElementIdx].shortLosses + tradeRecordsVec[maxElementIdx].longLosses << endl;
