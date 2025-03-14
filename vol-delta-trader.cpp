@@ -124,9 +124,9 @@ void initializeDevice() {
 	 * Read OpenCL kernel file as a string.
 	 * */
 #ifdef LIST_TRADES
-	std::ifstream kernel_file("vol-delta-with-trades.cl");
+	std::ifstream kernel_file("vol-delta-trader-with-trades.cl");
 #else
-	std::ifstream kernel_file("vol-delta.cl");
+	std::ifstream kernel_file("vol-delta-trader.cl");
 #endif
 	std::string src(std::istreambuf_iterator<char>(kernel_file), (std::istreambuf_iterator<char>()));
 
