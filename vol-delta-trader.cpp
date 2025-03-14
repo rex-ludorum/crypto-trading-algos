@@ -264,7 +264,7 @@ int main(int argc, char* argv[]) {
 	double x = 0;
 	generate(stopLosses.begin(), stopLosses.end(), [x] () mutable { return x += 0.5; });
 
-	vector<double> targets(9);
+	vector<double> targets(11);
 	x = 0.5;
 	generate(targets.begin(), targets.end(), [x] () mutable { return x += 0.5; });
 
@@ -527,7 +527,7 @@ int main(int argc, char* argv[]) {
 
 #ifdef WRITE_OUTPUT
 	ofstream outFile;
-	outFile.open("resultsVolDelta");
+	outFile.open("resultsVolDeltaTrader");
 	if (outFile.is_open()) {
 		for (size_t i = 0; i < comboVect.size(); i++) {
 			outFile << "Stop loss: " << to_string(comboVect[i].stopLoss) << endl;

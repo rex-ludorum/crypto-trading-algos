@@ -33,7 +33,7 @@ using std::endl;
 #define ONE_HOUR_MICROSECONDS 3600000000
 #define FIFTEEN_MINUTES_MICROSECONDS 900000000
 
-#define NUM_WINDOWS 16
+#define NUM_WINDOWS 4
 
 #define STARTING_PERCENTILE 30
 
@@ -92,37 +92,49 @@ void *performWork(void *arguments){
 	return NULL;
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+	if (argc < 2) {
+		cout << "No file name specified!" << endl;
+		return 1;
+	}
+
+#if defined(__WIN64)
 	_putenv("TZ=/usr/share/zoneinfo/UTC");
+#elif defined(__linux)
+	putenv("TZ=/usr/share/zoneinfo/UTC");
+#endif
+
 	ifstream myFile;
-	myFile.open("BTC-USD_2024-07-22-02.00.00.000000000_2024-11-08-02.00.00.000000000");
+	for (int i = 1; i < argc; i++) {
+		myFile.open(argv[i]);
+		if (myFile.is_open()) {
+			cout << "Reading " << argv[i] << endl;
+			string line;
+			while (getline(myFile, line)) {
+				vector<string> splits = split(line);
+				double qty = stod(splits[4]);
+				qtys.emplace_back(qty);
+				bool isBuyerMaker;
+				istringstream(splits[5]) >> boolalpha >> isBuyerMaker;
+				sides.emplace_back(isBuyerMaker);
+				string date = splits[1] + "T" + splits[2];
+				tm localTimeTm;
+				int micros;
+				istringstream(date) >> get_time(&localTimeTm, "%Y-%m-%dT%H:%M:%S.") >> micros;
+				micros /= 1000;
+				localTimeTm.tm_isdst = 0;
+				auto tpLocal = system_clock::from_time_t(mktime(&localTimeTm));
+				long long timestamp = duration_cast<microseconds>(tpLocal.time_since_epoch()).count() + micros;
+				timestamps.emplace_back(timestamp);
+
+				ids.emplace_back(stoi(splits[0]));
+			}
+			myFile.close();
+		}
+	}
 
 	long long n = 0;
 	generate(windows.begin(), windows.end(), [n] () mutable { return n += FIFTEEN_MINUTES_MICROSECONDS; });
-
-	if (myFile.is_open()) {
-		string line;
-		vector<string> l;
-		while (getline(myFile, line)) {
-			vector<string> splits = split(line);
-			double qty = stod(splits[4]);
-			qtys.emplace_back(qty);
-			bool isBuyerMaker;
-			istringstream(splits[5]) >> boolalpha >> isBuyerMaker;
-			sides.emplace_back(isBuyerMaker);
-			string date = splits[1] + "T" + splits[2];
-			tm localTimeTm;
-			int micros;
-			istringstream(date) >> get_time(&localTimeTm, "%Y-%m-%dT%H:%M:%S.") >> micros;
-			micros /= 1000;
-			localTimeTm.tm_isdst = 0;
-			auto tpLocal = system_clock::from_time_t(mktime(&localTimeTm));
-			long long timestamp = duration_cast<microseconds>(tpLocal.time_since_epoch()).count() + micros;
-			timestamps.emplace_back(timestamp);
-
-			ids.emplace_back(stoi(splits[0]));
-		}
-	}
 
 	pthread_t threads[NUM_WINDOWS];
 	int thread_args[NUM_WINDOWS];

@@ -264,7 +264,7 @@ int main(int argc, char* argv[]) {
 	double x = 0;
 	generate(stopLosses.begin(), stopLosses.end(), [x] () mutable { return x += 0.5; });
 
-	vector<double> targets(9);
+	vector<double> targets(11);
 	x = 0.5;
 	generate(targets.begin(), targets.end(), [x] () mutable { return x += 0.5; });
 
