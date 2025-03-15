@@ -527,9 +527,7 @@ int main(int argc, char* argv[]) {
 		outFile << "Final capital: " << tradeRecordsVec[maxElementIdx].capital << endl;
 		outFile << "Stop loss: " << comboVect[maxElementIdx].stopLoss << endl;
 		outFile << "Target: " << comboVect[maxElementIdx].target << endl;
-		outFile << "Window: " << comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS << " minutes" << endl;
-		outFile << "Buy volume threshold: " << comboVect[maxElementIdx].buyVolPercentile << endl;
-		outFile << "Sell volume threshold: " << comboVect[maxElementIdx].sellVolPercentile << endl;
+		outFile << "Entry threshold: " << comboVect[maxElementIdx].entryThreshold << endl;
 		outFile << "Total trades: " << tradeRecordsVec[maxElementIdx].shorts + tradeRecordsVec[maxElementIdx].longs << endl;
 		outFile << "Wins: " << tradeRecordsVec[maxElementIdx].shortWins + tradeRecordsVec[maxElementIdx].longWins << endl;
 		outFile << "Losses: " << tradeRecordsVec[maxElementIdx].shortLosses + tradeRecordsVec[maxElementIdx].longLosses << endl;
@@ -545,9 +543,7 @@ int main(int argc, char* argv[]) {
 		outFile << "Final capital: " << tradeRecordsVec[maxElementIdx].capital << endl;
 		outFile << "Stop loss: " << comboVect[maxElementIdx].stopLoss << endl;
 		outFile << "Target: " << comboVect[maxElementIdx].target << endl;
-		outFile << "Window: " << comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS << " minutes" << endl;
-		outFile << "Buy volume threshold: " << comboVect[maxElementIdx].buyVolPercentile << endl;
-		outFile << "Sell volume threshold: " << comboVect[maxElementIdx].sellVolPercentile << endl;
+		outFile << "Entry threshold: " << comboVect[maxElementIdx].entryThreshold << endl;
 		outFile << "Total trades: " << tradeRecordsVec[maxElementIdx].shorts + tradeRecordsVec[maxElementIdx].longs << endl;
 		outFile << "Wins: " << tradeRecordsVec[maxElementIdx].shortWins + tradeRecordsVec[maxElementIdx].longWins << endl;
 		outFile << "Losses: " << tradeRecordsVec[maxElementIdx].shortLosses + tradeRecordsVec[maxElementIdx].longLosses << endl;
