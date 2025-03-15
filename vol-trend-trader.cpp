@@ -613,6 +613,7 @@ int main(int argc, char* argv[]) {
 		outFile << "Shorts: " << tradeRecordsVec[maxElementIdx].shorts << endl;
 		outFile << "Short wins: " << tradeRecordsVec[maxElementIdx].shortWins << endl;
 		outFile << "Short losses: " << tradeRecordsVec[maxElementIdx].shortLosses << endl;
+		outFile << endl;
 
 		maxElementIdx = std::max_element(tradeRecordsVec.begin(), tradeRecordsVec.end(), [](tradeRecord t1, tradeRecord t2) { return (double) (t1.shortWins + t1.longWins) / (t1.shorts + t1.longs) < (double) (t2.shortWins + t2.longWins) / (t2.shorts + t2.longs); }) - tradeRecordsVec.begin();
 		outFile << "Best win rate:" << endl;
@@ -632,6 +633,7 @@ int main(int argc, char* argv[]) {
 		outFile << "Shorts: " << tradeRecordsVec[maxElementIdx].shorts << endl;
 		outFile << "Short wins: " << tradeRecordsVec[maxElementIdx].shortWins << endl;
 		outFile << "Short losses: " << tradeRecordsVec[maxElementIdx].shortLosses << endl;
+		outFile << endl;
 
 		maxElementIdx = std::max_element(tradeRecordsVec.begin(), tradeRecordsVec.end(), [](tradeRecord t1, tradeRecord t2) { return t1.shorts + t1.longs < t2.shorts + t2.longs; }) - tradeRecordsVec.begin();
 		outFile << "Most trades:" << endl;
@@ -697,6 +699,7 @@ int main(int argc, char* argv[]) {
 	cout << "Shorts: " << tradeRecordsVec[maxElementIdx].shorts << endl;
 	cout << "Short wins: " << tradeRecordsVec[maxElementIdx].shortWins << endl;
 	cout << "Short losses: " << tradeRecordsVec[maxElementIdx].shortLosses << endl;
+	cout << endl;
 
 	maxElementIdx = std::max_element(tradeRecordsVec.begin(), tradeRecordsVec.end(), [](tradeRecord t1, tradeRecord t2) { return (double) (t1.shortWins + t1.longWins) / (t1.shorts + t1.longs) < (double) (t2.shortWins + t2.longWins) / (t2.shorts + t2.longs); }) - tradeRecordsVec.begin();
 	cout << "Best win rate:" << endl;
@@ -716,6 +719,7 @@ int main(int argc, char* argv[]) {
 	cout << "Shorts: " << tradeRecordsVec[maxElementIdx].shorts << endl;
 	cout << "Short wins: " << tradeRecordsVec[maxElementIdx].shortWins << endl;
 	cout << "Short losses: " << tradeRecordsVec[maxElementIdx].shortLosses << endl;
+	cout << endl;
 
 	maxElementIdx = std::max_element(tradeRecordsVec.begin(), tradeRecordsVec.end(), [](tradeRecord t1, tradeRecord t2) { return t1.shorts + t1.longs < t2.shorts + t2.longs; }) - tradeRecordsVec.begin();
 	cout << "Most trades:" << endl;
