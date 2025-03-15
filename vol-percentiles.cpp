@@ -35,7 +35,8 @@ using std::endl;
 
 #define NUM_WINDOWS 4
 
-#define STARTING_PERCENTILE 30
+#define STARTING_PERCENTILE 25
+#define ENDING_PERCENTILE 70
 
 vector<double> qtys;
 vector<long long> timestamps;
@@ -162,7 +163,7 @@ int main(int argc, char* argv[]) {
 	if (outFile.is_open()) {
 		for (size_t j = 0; j < allBuyVols.size(); j++) {
 			if (j != 0) outFile << endl;
-			for (int k = STARTING_PERCENTILE; k < 100; k += 5) {
+			for (int k = STARTING_PERCENTILE; k <= ENDING_PERCENTILE; k += 5) {
 				if (k != STARTING_PERCENTILE) outFile << " ";
 				outFile << to_string(allBuyVols[j][(int) (allBuyVols[j].size() * ((double) k / 100))]);
 			}
@@ -174,7 +175,7 @@ int main(int argc, char* argv[]) {
 	if (outFile.is_open()) {
 		for (size_t j = 0; j < allSellVols.size(); j++) {
 			if (j != 0) outFile << endl;
-			for (int k = STARTING_PERCENTILE; k < 100; k += 5) {
+			for (int k = STARTING_PERCENTILE; k <= ENDING_PERCENTILE; k += 5) {
 				if (k != STARTING_PERCENTILE) outFile << " ";
 				outFile << to_string(allSellVols[j][(int) (allSellVols[j].size() * ((double) k / 100))]);
 			}

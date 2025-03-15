@@ -35,7 +35,7 @@ using std::endl;
 
 #define NUM_WINDOWS 4
 
-#define STARTING_PERCENTILE 5
+vector<double> percentiles = {5, 7.5, 10, 15, 20, 25, 35, 65, 75, 80, 85, 90, 92.5, 95};
 
 vector<double> qtys;
 vector<long long> timestamps;
@@ -157,9 +157,9 @@ int main(int argc, char* argv[]) {
 	if (outFile.is_open()) {
 		for (size_t j = 0; j < allDeltas.size(); j++) {
 			if (j != 0) outFile << endl;
-			for (int k = STARTING_PERCENTILE; k < 100; k += 5) {
-				if (k != STARTING_PERCENTILE) outFile << " ";
-				outFile << to_string(allDeltas[j][(int) (allDeltas[j].size() * ((double) k / 100))]);
+			for (auto percentile : percentiles) {
+				if (percentile != percentiles[0]) outFile << " ";
+				outFile << to_string(allDeltas[j][(int) (allDeltas[j].size() * percentile / 100)]);
 			}
 		}
 		outFile.close();
