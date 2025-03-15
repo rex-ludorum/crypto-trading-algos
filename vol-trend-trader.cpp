@@ -622,6 +622,7 @@ int main(int argc, char* argv[]) {
 		outFile << "Window: " << comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS << " minutes" << endl;
 		outFile << "Buy volume threshold: " << comboVect[maxElementIdx].buyVolPercentile << endl;
 		outFile << "Sell volume threshold: " << comboVect[maxElementIdx].sellVolPercentile << endl;
+		outFile << "Entry threshold: " << comboVect[maxElementIdx].entryThreshold << endl;
 		outFile << "Total trades: " << tradeRecordsVec[maxElementIdx].shorts + tradeRecordsVec[maxElementIdx].longs << endl;
 		outFile << "Wins: " << tradeRecordsVec[maxElementIdx].shortWins + tradeRecordsVec[maxElementIdx].longWins << endl;
 		outFile << "Losses: " << tradeRecordsVec[maxElementIdx].shortLosses + tradeRecordsVec[maxElementIdx].longLosses << endl;
@@ -640,6 +641,7 @@ int main(int argc, char* argv[]) {
 		outFile << "Window: " << comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS << " minutes" << endl;
 		outFile << "Buy volume threshold: " << comboVect[maxElementIdx].buyVolPercentile << endl;
 		outFile << "Sell volume threshold: " << comboVect[maxElementIdx].sellVolPercentile << endl;
+		outFile << "Entry threshold: " << comboVect[maxElementIdx].entryThreshold << endl;
 		outFile << "Total trades: " << tradeRecordsVec[maxElementIdx].shorts + tradeRecordsVec[maxElementIdx].longs << endl;
 		outFile << "Wins: " << tradeRecordsVec[maxElementIdx].shortWins + tradeRecordsVec[maxElementIdx].longWins << endl;
 		outFile << "Losses: " << tradeRecordsVec[maxElementIdx].shortLosses + tradeRecordsVec[maxElementIdx].longLosses << endl;
@@ -704,6 +706,7 @@ int main(int argc, char* argv[]) {
 	cout << "Window: " << comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS << " minutes" << endl;
 	cout << "Buy volume threshold: " << comboVect[maxElementIdx].buyVolPercentile << endl;
 	cout << "Sell volume threshold: " << comboVect[maxElementIdx].sellVolPercentile << endl;
+	cout << "Entry threshold: " << comboVect[maxElementIdx].entryThreshold << endl;
 	cout << "Total trades: " << tradeRecordsVec[maxElementIdx].shorts + tradeRecordsVec[maxElementIdx].longs << endl;
 	cout << "Wins: " << tradeRecordsVec[maxElementIdx].shortWins + tradeRecordsVec[maxElementIdx].longWins << endl;
 	cout << "Losses: " << tradeRecordsVec[maxElementIdx].shortLosses + tradeRecordsVec[maxElementIdx].longLosses << endl;
@@ -722,6 +725,7 @@ int main(int argc, char* argv[]) {
 	cout << "Window: " << comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS << " minutes" << endl;
 	cout << "Buy volume threshold: " << comboVect[maxElementIdx].buyVolPercentile << endl;
 	cout << "Sell volume threshold: " << comboVect[maxElementIdx].sellVolPercentile << endl;
+	cout << "Entry threshold: " << comboVect[maxElementIdx].entryThreshold << endl;
 	cout << "Total trades: " << tradeRecordsVec[maxElementIdx].shorts + tradeRecordsVec[maxElementIdx].longs << endl;
 	cout << "Wins: " << tradeRecordsVec[maxElementIdx].shortWins + tradeRecordsVec[maxElementIdx].longWins << endl;
 	cout << "Losses: " << tradeRecordsVec[maxElementIdx].shortLosses + tradeRecordsVec[maxElementIdx].longLosses << endl;
