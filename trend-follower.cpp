@@ -415,14 +415,14 @@ int main(int argc, char* argv[]) {
 	}
 
 	if (listTrades) {
-		err = trendKernel.setArg(7, entriesAndExitsBuf);
+		err = trendKernel.setArg(6, entriesAndExitsBuf);
 		if (err != CL_SUCCESS) {
-			cout << "Error for trendKernel setArg 7: " << err << endl;
+			cout << "Error for trendKernel setArg 6: " << err << endl;
 		}
 	} else {
-		err = trendKernel.setArg(7, numTradesInIntervalBuf);
+		err = trendKernel.setArg(6, numTradesInIntervalBuf);
 		if (err != CL_SUCCESS) {
-			cout << "Error for trendKernel setArg 7: " << err << endl;
+			cout << "Error for trendKernel setArg 6: " << err << endl;
 		}
 	}
 
