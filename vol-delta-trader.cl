@@ -46,13 +46,6 @@ typedef struct __attribute__ ((packed)) twMetadata {
 	int twStart;
 } twMetadata;
 
-__kernel void test(const int g, __global float* ds) {
-	int index = get_global_id(0);
-	printf("%d\n", index);
-	ds[index] = 5;
-	printf("%f\n", ds[index]);
-}
-
 #define MICROSECONDS_IN_HOUR 3600000000
 #define MICROSECONDS_IN_DAY 86400000000
 #define MICROSECONDS_IN_WEEK 604800000000
@@ -93,7 +86,7 @@ inline int isDST(long ts) {
 	}
 }
 
-__kernel void volTrader(__global int* numTrades, __global tradeWithoutDate* trades, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas, __global twMetadata* twBetweenRuns) {
+__kernel void volTrader(__global int* numTrades, __global tradeWithoutDate* trades, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas, __global twMetadata* twBetweenRuns, __global int* numTradesInInterval) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
 	combo c = combos[index];
@@ -113,6 +106,8 @@ __kernel void volTrader(__global int* numTrades, __global tradeWithoutDate* trad
 
 	double precomputedTarget = 1 + c.target * 0.01;
 	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
+
+	int tradesInInterval = 0;
 
 	for (int i = twBetweenRuns->twStart; i < *numTrades; i++) {
 		double vol = trades[i].qty;
@@ -135,6 +130,7 @@ __kernel void volTrader(__global int* numTrades, __global tradeWithoutDate* trad
 					e = (entry) {0.0, false};
 					lw += profitMargin >= 1.0;
 					ll += profitMargin < 1.0;
+					tradesInInterval++;
 				}
 			} else {
 				profitMargin = 2 - price / e.price;
@@ -143,6 +139,7 @@ __kernel void volTrader(__global int* numTrades, __global tradeWithoutDate* trad
 					e = (entry) {0.0, false};
 					sw += profitMargin >= 1.0;
 					sl += profitMargin < 1.0;
+					tradesInInterval++;
 				}
 			}
 		}
@@ -178,4 +175,5 @@ __kernel void volTrader(__global int* numTrades, __global tradeWithoutDate* trad
 	entries[index] = e;
 	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
 	positionDatas[index] = (positionData) {tw.timestamp, buyVol, sellVol, tw.tradeId};
+	numTradesInInterval[index] = tradesInInterval;
 }

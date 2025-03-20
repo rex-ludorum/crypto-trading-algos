@@ -45,13 +45,6 @@ typedef struct __attribute__ ((packed)) positionData {
 
 #define MARCH_1_1972_IN_SECONDS 68256000
 
-__kernel void test(const int g, __global float* ds) {
-	int index = get_global_id(0);
-	printf("%d\n", index);
-	ds[index] = 5;
-	printf("%f\n", ds[index]);
-}
-
 inline int isDST(long ts) {
 	int timestamp = ts / 1000000;
 	int leapYearCycles = (timestamp - MARCH_1_1972_IN_SECONDS) / ((365 * 4 + 1) * 86400);
@@ -82,7 +75,7 @@ inline int isDST(long ts) {
 	}
 }
 
-__kernel void trendFollower(__global int* numTrades, __global tradeWithoutDate* trades, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas) {
+__kernel void trendFollower(__global int* numTrades, __global tradeWithoutDate* trades, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas, __global int* numTradesInInterval) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
 	combo c = combos[index];
@@ -105,6 +98,8 @@ __kernel void trendFollower(__global int* numTrades, __global tradeWithoutDate* 
 	double precomputedLongEntryThreshold = 1 + c.entryThreshold * 0.01;
 	double precomputedShortEntryThreshold = 1 - c.entryThreshold * 0.01;
 
+	int tradesInInterval = 0;
+
 	for (int i = 0; i < *numTrades; i++) {
 		double price = trades[i].price;
 		long microseconds = trades[i].timestamp;
@@ -123,6 +118,7 @@ __kernel void trendFollower(__global int* numTrades, __global tradeWithoutDate* 
 					e = (entry) {0.0, false};
 					lw += profitMargin >= 1.0;
 					ll += profitMargin < 1.0;
+					tradesInInterval++;
 				}
 			} else {
 				profitMargin = 2 - price / e.price;
@@ -131,6 +127,7 @@ __kernel void trendFollower(__global int* numTrades, __global tradeWithoutDate* 
 					e = (entry) {0.0, false};
 					sw += profitMargin >= 1.0;
 					sl += profitMargin < 1.0;
+					tradesInInterval++;
 				}
 			}
 		}
@@ -175,4 +172,5 @@ __kernel void trendFollower(__global int* numTrades, __global tradeWithoutDate* 
 	uchar bools = 0;
 	bools |= (uchar) increasing << INCREASING_BIT;
 	positionDatas[index] = (positionData) {maxPrice, minPrice, bools};
+	numTradesInInterval[index] = tradesInInterval;
 }

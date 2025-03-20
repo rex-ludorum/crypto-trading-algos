@@ -92,14 +92,7 @@ inline int isDST(long ts) {
 	}
 }
 
-__kernel void test(const int g, __global float* ds) {
-	int index = get_global_id(0);
-	printf("%d\n", index);
-	ds[index] = 5;
-	printf("%f\n", ds[index]);
-}
-
-__kernel void volTrendTrader(__global int* numTrades, __global tradeWithoutDate* trades, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas, __global twMetadata* twBetweenRuns) {
+__kernel void volTrendTrader(__global int* numTrades, __global tradeWithoutDate* trades, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas, __global twMetadata* twBetweenRuns, __global int* numTradesInInterval) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
 	combo c = combos[index];
@@ -127,6 +120,8 @@ __kernel void volTrendTrader(__global int* numTrades, __global tradeWithoutDate*
 	double precomputedLongEntryThreshold = 1 + c.entryThreshold * 0.01;
 	double precomputedShortEntryThreshold = 1 - c.entryThreshold * 0.01;
 
+	int tradesInInterval = 0;
+
 	for (int i = twBetweenRuns->twStart; i < *numTrades; i++) {
 		double vol = trades[i].qty;
 		double price = trades[i].price;
@@ -148,6 +143,7 @@ __kernel void volTrendTrader(__global int* numTrades, __global tradeWithoutDate*
 					e = (entry) {0.0, false};
 					lw += profitMargin >= 1.0;
 					ll += profitMargin < 1.0;
+					tradesInInterval++;
 				}
 			} else {
 				profitMargin = 2 - price / e.price;
@@ -156,6 +152,7 @@ __kernel void volTrendTrader(__global int* numTrades, __global tradeWithoutDate*
 					e = (entry) {0.0, false};
 					sw += profitMargin >= 1.0;
 					sl += profitMargin < 1.0;
+					tradesInInterval++;
 				}
 			}
 		}
@@ -214,4 +211,5 @@ __kernel void volTrendTrader(__global int* numTrades, __global tradeWithoutDate*
 	uchar bools = 0;
 	bools |= (uchar) increasing << INCREASING_BIT;
 	positionDatas[index] = (positionData) {tw.timestamp, buyVol, sellVol, maxPrice, minPrice, tw.tradeId, bools};
+	numTradesInInterval[index] = tradesInInterval;
 }
