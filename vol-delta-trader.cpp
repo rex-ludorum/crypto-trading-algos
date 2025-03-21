@@ -50,7 +50,7 @@ using std::endl;
 
 #define NUM_WINDOWS 4
 
-#define MAX_TOTAL_TRADES 42
+#define MAX_TOTAL_TRADES 121
 
 #define LOSS_BIT 0
 #define WIN_BIT 1

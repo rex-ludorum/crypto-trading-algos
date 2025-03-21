@@ -46,7 +46,7 @@ using std::endl;
 
 #define ONE_HOUR_MICROSECONDS 3600000000
 
-#define MAX_TOTAL_TRADES 42
+#define MAX_TOTAL_TRADES 132
 
 #define LOSS_BIT 0
 #define WIN_BIT 1
