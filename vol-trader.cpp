@@ -39,6 +39,7 @@ using std::max_element;
 using std::setprecision;
 using std::fixed;
 using std::optional;
+using std::nullopt;
 
 using std::cout;
 using std::cerr;
@@ -50,7 +51,7 @@ using std::endl;
 
 #define NUM_WINDOWS 4
 
-#define MAX_TOTAL_TRADES 89
+#define MAX_TOTAL_TRADES 90
 
 #define LOSS_BIT 0
 #define WIN_BIT 1
@@ -181,12 +182,16 @@ struct __attribute__ ((packed)) combo {
 	cl_double target;
 };
 
-struct __attribute__ ((packed)) entryAndExit {
+struct __attribute__ ((packed)) entryData {
 	cl_double buyVol;
 	cl_double sellVol;
+};
+
+struct __attribute__ ((packed)) entryAndExit {
 	cl_int entryIndex;
 	cl_int exitIndex;
 	cl_int longShortWinLoss;
+	entryData e;
 };
 
 struct __attribute__ ((packed)) entry {
@@ -419,22 +424,22 @@ int main(int argc, char* argv[]) {
 		return 1;
 	}
 
-	optional< vector<entryAndExit> > entriesAndExits;
+	vector<entryAndExit> entriesAndExits;
 	cl::Buffer entriesAndExitsBuf;
 
-	optional< vector<cl_int> > numTradesInInterval;
+	vector<cl_int> numTradesInInterval;
 	cl::Buffer numTradesInIntervalBuf;
 
 	if (listTrades) {
 		entriesAndExits = vector<entryAndExit>(comboVect.size() * MAX_TOTAL_TRADES, entryAndExit{});
-		entriesAndExitsBuf = cl::Buffer(context, CL_MEM_WRITE_ONLY | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR, comboVect.size() * sizeof(entryAndExit) * MAX_TOTAL_TRADES, &(*entriesAndExits)[0], &err);
+		entriesAndExitsBuf = cl::Buffer(context, CL_MEM_WRITE_ONLY | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR, comboVect.size() * sizeof(entryAndExit) * MAX_TOTAL_TRADES, &entriesAndExits[0], &err);
 		if (err != CL_SUCCESS) {
 			cout << "Error for entriesAndExitsBuf: " << err << endl;
 			return 1;
 		}
 	} else {
 		numTradesInInterval = vector<cl_int>(comboVect.size(), 0);
-		numTradesInIntervalBuf = cl::Buffer(context, CL_MEM_WRITE_ONLY | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR, comboVect.size() * sizeof(cl_int), &(*numTradesInInterval)[0], &err);
+		numTradesInIntervalBuf = cl::Buffer(context, CL_MEM_WRITE_ONLY | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR, comboVect.size() * sizeof(cl_int), &numTradesInInterval[0], &err);
 		if (err != CL_SUCCESS) {
 			cout << "Error for numTradesInIntervalBuf: " << err << endl;
 			return 1;
@@ -514,6 +519,11 @@ int main(int argc, char* argv[]) {
 
 	int maxTradesPerInterval = 0;
 
+	vector< vector<entryAndExit> > allTrades(comboVect.size());
+
+	size_t tradeOffset = 0;
+	optional<size_t> actualEntryIndex;
+
 	while (true) {
 		size_t currSize = min((size_t) INCREMENT, tradesWithoutDates.size() - currIdx);
 		err = queue.enqueueWriteBuffer(inputTrades, CL_FALSE, 0, currSize * sizeof(tradeWithoutDate), &tradesWithoutDates[currIdx]);
@@ -543,19 +553,47 @@ int main(int argc, char* argv[]) {
 			return 1;
 		}
 		if (listTrades) {
-			err = queue.enqueueReadBuffer(entriesAndExitsBuf, CL_TRUE, 0, comboVect.size() * sizeof(entryAndExit) * MAX_TOTAL_TRADES, &(*entriesAndExits)[0]);
+			err = queue.enqueueReadBuffer(entriesAndExitsBuf, CL_TRUE, 0, comboVect.size() * sizeof(entryAndExit) * MAX_TOTAL_TRADES, &entriesAndExits[0]);
 			if (err != CL_SUCCESS) {
 				cout << "Error for reading entriesAndExits: " << err << endl;
 				return 1;
 			}
 			// handle trade info
+			for (size_t i = 0; i < comboVect.size(); i++) {
+				for (size_t j = 0; j < MAX_TOTAL_TRADES; j++) {
+					entryAndExit adjustedData = entriesAndExits[i * MAX_TOTAL_TRADES + j];
+					if (adjustedData.entryIndex == 0) {
+						// keep optional value in case there are no trades in this interval?
+						actualEntryIndex = nullopt;
+						break;
+					}
+					if (adjustedData.exitIndex != 0) {
+						if (j == 0 && actualEntryIndex.has_value()) {
+							adjustedData.entryIndex = *actualEntryIndex;
+						} else {
+							adjustedData.entryIndex += tradeOffset;
+						}
+						adjustedData.exitIndex += tradeOffset;
+						allTrades[i].emplace_back(adjustedData);
+					} else {
+						actualEntryIndex = adjustedData.entryIndex + tradeOffset;
+						break;
+					}
+				}
+			}
+			entriesAndExits = vector<entryAndExit>(comboVect.size() * MAX_TOTAL_TRADES, entryAndExit{});
+			err = queue.enqueueWriteBuffer(entriesAndExitsBuf, CL_FALSE, 0, comboVect.size() * sizeof(entryAndExit) * MAX_TOTAL_TRADES, &entriesAndExits[0]);
+			if (err != CL_SUCCESS) {
+				cout << "Error for writing entriesAndExits: " << err << endl;
+				return 1;
+			}
 		} else {
-			err = queue.enqueueReadBuffer(numTradesInIntervalBuf, CL_FALSE, 0, comboVect.size() * sizeof(cl_int), &(*numTradesInInterval)[0]);
+			err = queue.enqueueReadBuffer(numTradesInIntervalBuf, CL_FALSE, 0, comboVect.size() * sizeof(cl_int), &numTradesInInterval[0]);
 			if (err != CL_SUCCESS) {
 				cout << "Error for reading numTradesInInterval: " << err << endl;
 				return 1;
 			}
-			maxTradesPerInterval = max(maxTradesPerInterval, *max_element(numTradesInInterval->begin(), numTradesInInterval->end()));
+			maxTradesPerInterval = max(maxTradesPerInterval, *max_element(numTradesInInterval.begin(), numTradesInInterval.end()));
 		}
 		err = queue.finish();
 		if (err != CL_SUCCESS) {
@@ -568,6 +606,7 @@ int main(int argc, char* argv[]) {
 		tw.twTranslation = minTradeId;
 		tw.twStart = currSize - minTradeId;
 		currIdx += minTradeId;
+		tradeOffset += minTradeId;
 	}
 
 	/*
@@ -619,18 +658,23 @@ int main(int argc, char* argv[]) {
 				outFile << "Final capital: " << to_string(tradeRecordsVec[i].capital) << endl;
 				if (listTrades) {
 					for (int j = 0; j < MAX_TOTAL_TRADES; j++) {
-						entryAndExit e = (*entriesAndExits)[i * MAX_TOTAL_TRADES + j];
+						entryAndExit e = allTrades[i][j];
 						if (e.entryIndex == 0) break;
 						else {
+							bool longEntry;
 							if (e.longShortWinLoss & (1 << LONG_POS_BIT)) {
 								outFile << "LONG ";
+								longEntry = true;
 							} else if (e.longShortWinLoss & (1 << SHORT_POS_BIT)) {
 								outFile << "SHORT ";
+								longEntry = false;
 							}
 							outFile << to_string(trades[e.entryIndex].price) << " " << trades[e.entryIndex].date << " " << to_string(trades[e.entryIndex].tradeId) << endl;
-							if (e.longShortWinLoss & (1 << WIN_BIT)) {
+							outFile << "Buy volume: " << to_string(e.e.buyVol) << endl;
+							outFile << "Sell volume: " << to_string(e.e.sellVol) << endl;
+							if ((longEntry && trades[e.exitIndex].price >= trades[e.entryIndex].price) || (!longEntry && trades[e.exitIndex].price <= trades[e.entryIndex].price)) {
 								outFile << "Profit: " << to_string(trades[e.exitIndex].price) << " " << trades[e.exitIndex].date << " " << to_string(trades[e.exitIndex].tradeId) << endl;
-							} else if (e.longShortWinLoss & (1 << LOSS_BIT)) {
+							} else {
 								outFile << "Loss: " << to_string(trades[e.exitIndex].price) << " " << trades[e.exitIndex].date << " " << to_string(trades[e.exitIndex].tradeId) << endl;;
 							}
 						}
