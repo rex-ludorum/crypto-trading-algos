@@ -145,17 +145,20 @@ __kernel void volTrader(__global int* numTrades, __global tradeWithoutDate* trad
 		}
 
 		if (microseconds - tw.timestamp > c.window) {
-			for (int k = tw.tradeId; k < i; k++) {
-				long newMicroseconds = trades[k].timestamp;
+			int k = tw.tradeId;
+			long newMicroseconds;
+			while (k < i) {
+				newMicroseconds = trades[k].timestamp;
 				if (microseconds - newMicroseconds > c.window) {
 					double newVol = trades[k].qty;
 					if (trades[k].isBuyerMaker) sellVol -= newVol;
 					else buyVol -= newVol;
 				} else {
-					tw = (timeWindow) {k, newMicroseconds};
 					break;
 				}
+				k++;
 			}
+			tw = (timeWindow) {k, newMicroseconds};
 		}
 		if (trades[i].isBuyerMaker) sellVol += vol;
 		else buyVol += vol;
