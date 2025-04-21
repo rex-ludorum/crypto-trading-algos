@@ -13,14 +13,12 @@ AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
 
 REGION_NAME = "us-east-2"
 
-START_DATE = "2024-07-17 22:28:47"
-END_DATE = "2024-07-18 00:12:55"
 CLIENT_TOKEN = "clientTokenClientTokenClientToken1"
 
 def getFirstNextToken():
 	queryClient = boto3.client('timestream-query', region_name=REGION_NAME, aws_access_key_id=ACCESS_KEY, aws_secret_access_key=AWS_SECRET_ACCESS_KEY)
 	try:
-		print("Querying %s with query %s and ClientToken %s at %s" % (symbol, queryString, CLIENT_TOKEN, str(datetime.datetime.now())))
+		print("Querying %s with query %s and ClientToken %s at %s" % (symbol, queryString, CLIENT_TOKEN, str(datetime.datetime.now(datetime.timezone.utc))))
 		response = queryClient.query(
 			QueryString=queryString,
 			ClientToken=CLIENT_TOKEN
@@ -34,7 +32,7 @@ def getFirstNextToken():
 
 def pullData(nextToken):
 	try:
-		print("Querying %s at %s" % (symbol, str(datetime.datetime.now())))
+		print("Querying %s at %s" % (symbol, str(datetime.datetime.now(datetime.timezone.utc))))
 		response = queryClient.query(
 			QueryString=queryString,
 			ClientToken=CLIENT_TOKEN,
@@ -90,10 +88,20 @@ def saveToFile():
 	if "NextToken" not in response:
 		print("No NextToken:")
 		print(json.dumps(response, indent=2))
+		if checkResponse(response, queryId):
+			with open('%s_%s_%s' % (symbol, startDate.replace(" ", "-").replace(":", "."), endDate.replace(" ", "-").replace(":", ".")), 'w') as file:
+				for row in response['Rows']:
+					rowData = row['Data']
+					date = rowData[2]['ScalarValue']
+					qty = rowData[3]['ScalarValue']
+					price = rowData[4]['ScalarValue']
+					isBuyerMaker = rowData[5]['ScalarValue']
+					tradeId = rowData[6]['ScalarValue']
+					file.write(" ".join([tradeId, date, price, qty, isBuyerMaker]) + '\n')
 		return
 	else:
 		nextToken = response["NextToken"]
-	with open('%s_%s_%s' % (symbol, START_DATE.replace(" ", "-").replace(":", "."), END_DATE.replace(" ", "-").replace(":", ".")), 'w') as file:
+	with open('%s_%s_%s' % (symbol, startDate.replace(" ", "-").replace(":", "."), endDate.replace(" ", "-").replace(":", ".")), 'w') as file:
 		response = pullData(nextToken)
 		if not checkResponse(response, queryId):
 			return
@@ -124,9 +132,13 @@ def printError(error):
 
 parser = argparse.ArgumentParser(description='Retrieve trading data from AWS Timestream.')
 parser.add_argument('symbol', help='the trading pair to collect data from', choices=['BTC-USD', 'ETH-USD'])
+parser.add_argument('startTimestamp', help='the timestamp to start with', type=int)
+parser.add_argument('endTimestamp', help='the timestamp to end with', type=int)
 args = parser.parse_args()
 symbol = vars(args)['symbol']
-queryString = 'SELECT * FROM "coinbase-websocket-data"."%s" WHERE time between TIMESTAMP \'%s\' and TIMESTAMP \'%s\' ORDER BY time asc' % (symbol, START_DATE, END_DATE)
+startDate = datetime.datetime.fromtimestamp(vars(args)['startTimestamp'], datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+endDate = datetime.datetime.fromtimestamp(vars(args)['endTimestamp'], datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+queryString = 'SELECT * FROM "coinbase-websocket-data"."%s" WHERE time between TIMESTAMP \'%s\' and TIMESTAMP \'%s\' ORDER BY time asc' % (symbol, startDate, endDate)
 
 queryClient = boto3.client('timestream-query', region_name=REGION_NAME, aws_access_key_id=ACCESS_KEY, aws_secret_access_key=AWS_SECRET_ACCESS_KEY)
 
