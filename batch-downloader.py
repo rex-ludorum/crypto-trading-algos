@@ -84,7 +84,7 @@ def writeRecords(records, startDate, endDate):
 
 # Timestream does not allow two records with the same timestamp and dimensions to have different measure values
 # Therefore, add one us to the later timestamp
-def updateRecordTime(record, lastTrade, recordList):
+def updateRecordTime(record, lastTrade):
 	recordTime = record[0]
 	if lastTrade and lastTrade['Time'] != '0' and int(record[0]) <= int(lastTrade['Time']) + int(lastTrade['offset']):
 		record[0] = str(int(lastTrade['Time']) + int(lastTrade['offset']) + 1)
@@ -94,7 +94,6 @@ def updateRecordTime(record, lastTrade, recordList):
 		lastTrade['Time'] = recordTime
 		lastTrade['offset'] = str(0)
 	lastTrade['tradeId'] = getTradeIds([record])[0]
-	recordList.append(record)
 
 def adjustWindow(record, windows):
 	recordTime = str(int(record[0]) // 1000000)
@@ -136,58 +135,57 @@ def handleGap(startTime, startId, endTime, endId):
 		lastTrade = {'Time': '0', 'offset': '0', 'tradeId': str(startId)}
 		startDate = datetime.datetime.fromtimestamp(startTime, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
 		endDate = datetime.datetime.fromtimestamp(endTime, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
-		logMsg = "Gap found: %s - %s (%s - %s)" % (startId, endId, startDate, endDate)
-		print(logMsg)
-		log = [logMsg]
-		prevLastTradeId = startId
-		missedTrades = []
-		startingLastTradeId = startId
-		trades = []
+		with open('%s_%s_%s.csv' % (symbol, startDate.replace("T", "-").replace(":", "."), endDate.replace("T", "-").replace(":", ".")), 'w') as file:
+			file.write(",".join(["time", "measure_name", "symbol", "tradeId", "price", "size", "isBuyerMaker"]) + '\n')
+			logMsg = "Gap found: %s - %s (%s - %s)" % (startId, endId, startDate, endDate)
+			print(logMsg)
+			log = [logMsg]
+			prevLastTradeId = startId
+			missedTrades = []
+			startingLastTradeId = startId
 
-		# Use a three-second-minimum window since the max observed trades in a one-second window was 260 on Feb 28 2024
-		# Actually, see the test commands for a one-second window with more than 1000 trades
-		windows = {'startTime': '', 'windows': []}
-		windowOffset = computeOffset(windows)
+			# Use a three-second-minimum window since the max observed trades in a one-second window was 260 on Feb 28 2024
+			# Actually, see the test commands for a one-second window with more than 1000 trades
+			windows = {'startTime': '', 'windows': []}
+			windowOffset = computeOffset(windows)
 
-		while True:
-			while (retVal := getGap(endId, min(startTime + windowOffset, endTime), trades, startTime, lastTrade, missedTrades, log, windows)) == RetVal.WAIT:
-				# Rate limit is 30 requests per second
-				time.sleep(1 / 30)
+			while True:
+				while (retVal := getGap(endId, min(startTime + windowOffset, endTime), startTime, lastTrade, missedTrades, log, windows, file)) == RetVal.WAIT:
+					# Rate limit is 30 requests per second
+					time.sleep(1 / 30)
 
-			if retVal == RetVal.FAILURE:
-				break
-			if retVal == RetVal.SUCCESS and startTime + windowOffset >= endTime or endId == int(lastTrade['tradeId']) + 1:
-				break
+				if retVal == RetVal.FAILURE:
+					break
+				if retVal == RetVal.SUCCESS and startTime + windowOffset >= endTime or endId == int(lastTrade['tradeId']) + 1:
+					break
 
-			if retVal == RetVal.GAP_EXCEEDED:
-				windowOffset = 1
-			elif str(prevLastTradeId) == lastTrade['tradeId'] or retVal == RetVal.SUCCESS:
-				startTime = startTime + windowOffset
-				windowOffset = computeOffset(windows)
+				if retVal == RetVal.GAP_EXCEEDED:
+					windowOffset = 1
+				elif str(prevLastTradeId) == lastTrade['tradeId'] or retVal == RetVal.SUCCESS:
+					startTime = startTime + windowOffset
+					windowOffset = computeOffset(windows)
+				else:
+					# Might be able to just use the previous endTime as the new startTime like in the above case
+					startTime = int(lastTrade['Time']) // 1000000
+					windowOffset = computeOffset(windows)
+				prevLastTradeId = lastTrade['tradeId']
+
+			if not missedTrades:
+				missedTrades = list(range(int(lastTrade['tradeId']) + 1, endId))
 			else:
-				# Might be able to just use the previous endTime as the new startTime like in the above case
-				startTime = int(lastTrade['Time']) // 1000000
-				windowOffset = computeOffset(windows)
-			prevLastTradeId = lastTrade['tradeId']
+				lastMissedTradeId = max(int(lastTrade['tradeId']) + 1, missedTrades[-1] + 1)
+				missedTrades.extend(range(lastMissedTradeId, endId))
 
-		if not missedTrades:
-			missedTrades = list(range(int(lastTrade['tradeId']) + 1, endId))
-		else:
-			lastMissedTradeId = max(int(lastTrade['tradeId']) + 1, missedTrades[-1] + 1)
-			missedTrades.extend(range(lastMissedTradeId, endId))
+			if not all(missedTrades[i] <= missedTrades[i + 1] for i in range(len(missedTrades) - 1)):
+				printError(RuntimeError("List of missed trades is not in increasing order: %s" % (" ".join(str(x) for x in missedTrades))))
+			if len(missedTrades) > len(set(missedTrades)):
+				printError(RuntimeError("List of missed trades has duplicates: %s" % (" ".join(str(x) for x in missedTrades))))
+			if endId != int(lastTrade['tradeId']) + 1 or missedTrades:
+				errMsg = "Gaps still exist between %s and %s: %s\n" % (startingLastTradeId, endId, ", ".join(getMissedRanges(missedTrades)))
+				errMsg += "\n".join(log)
+				printError(RuntimeError(errMsg))
 
-		writeRecords(trades, startDate, endDate)
-
-		if not all(missedTrades[i] <= missedTrades[i + 1] for i in range(len(missedTrades) - 1)):
-			printError(RuntimeError("List of missed trades is not in increasing order: %s" % (" ".join(str(x) for x in missedTrades))))
-		if len(missedTrades) > len(set(missedTrades)):
-			printError(RuntimeError("List of missed trades has duplicates: %s" % (" ".join(str(x) for x in missedTrades))))
-		if endId != int(lastTrade['tradeId']) + 1 or missedTrades:
-			errMsg = "Gaps still exist between %s and %s: %s\n" % (startingLastTradeId, endId, ", ".join(getMissedRanges(missedTrades)))
-			errMsg += "\n".join(log)
-			printError(RuntimeError(errMsg))
-
-def getGap(endId, endTime, trades, startTime, lastTrade, missedTrades, log, windows):
+def getGap(endId, endTime, startTime, lastTrade, missedTrades, log, windows, file):
 	url = "https://api.coinbase.com/api/v3/brokerage/products/%s/ticker" % (symbol)
 	params = {"limit": MAX_REST_API_TRADES, "start": str(startTime), "end": str(endTime)}
 	jwt_uri = jwt_generator.format_jwt_uri("GET", "/api/v3/brokerage/products/%s/ticker" % (symbol))
@@ -224,7 +222,6 @@ def getGap(endId, endTime, trades, startTime, lastTrade, missedTrades, log, wind
 		idx = next((i for i, x in enumerate(responseTrades) if int(x['trade_id']) >= tradeId), -1)
 		if idx != -1:
 			formattedDate = dateutil.parser.isoparse(responseTrades[idx]['time'])
-			seconds = int(datetime.datetime.timestamp(formattedDate))
 			if len(responseTrades) > ONE_SECOND_MAX_TRADES and endTime - startTime > 1:
 				lastTradeTime = datetime.datetime.fromtimestamp(int(lastTrade['Time']) // 1000000, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
 				logMsg = "Moving gap back, lastTrade has timestamp %s.%s" % (lastTradeTime, str((int(lastTrade['Time']) % 1000000)).zfill(6))
@@ -269,8 +266,12 @@ def getGap(endId, endTime, trades, startTime, lastTrade, missedTrades, log, wind
 			idx = next((i for i, x in enumerate(responseTrades) if int(x['trade_id']) == tradeId), -1)
 			if (idx != -1):
 				record = prepareRecord(responseTrades[idx])
-				updateRecordTime(record, lastTrade, trades)
+				updateRecordTime(record, lastTrade)
 				adjustWindow(record, windows)
+				tempRecord = record.copy()
+				tempRecord.insert(1, symbol)
+				tempRecord.insert(1, "price")
+				file.write(",".join(tempRecord) + '\n')
 				# How do we know if we got all the trades in this given window or if there are still missing ones after the last?
 				if (idx == len(responseTrades) - 1):
 					break;
