@@ -5,8 +5,16 @@ def checkGaps():
 		ids = []
 		s = set()
 		for line in f:
-			data = line.split(" ")
-			id = int(data[0])
+			if '.csv' in inputFile and 'time' in line:
+				continue
+
+			if '.csv' in inputFile:
+				data = line.split(",")
+				id = int(data[3])
+			else:
+				data = line.split(" ")
+				id = int(data[0])
+
 			if id in s:
 				ids.append(int(data[0]))
 			else:

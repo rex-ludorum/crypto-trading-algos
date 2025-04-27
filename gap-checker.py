@@ -4,8 +4,15 @@ def checkGaps():
 	with open(inputFile, 'r') as f:
 		ids = []
 		for line in f:
-			data = line.split(" ")
-			ids.append(int(data[0]))
+			if '.csv' in inputFile and 'time' in line:
+				continue
+
+			if '.csv' in inputFile:
+				data = line.split(",")
+				ids.append(int(data[3]))
+			else:
+				data = line.split(" ")
+				ids.append(int(data[0]))
 
 		missedRanges = getMissedRanges(ids)
 		print(missedRanges[0])
