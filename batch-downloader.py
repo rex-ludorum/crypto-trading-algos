@@ -285,10 +285,16 @@ def getGap(endId, endTime, startTime, lastTrade, missedTrades, log, windows, fil
 		log.append(logMsg)
 		traceback.print_exc()
 		printError(e)
-		if response.status_code == 429:
+		if response.status_code == 429 or response.status_code == 502:
 			return RetVal.WAIT
 		else:
 			return RetVal.FAILURE
+	except requests.ConnectionError as e:
+		logMsg = "Encountered ConnectionError %s" % (repr(e))
+		log.append(logMsg)
+		traceback.print_exc()
+		printError(e)
+		return RetVal.WAIT
 	except Exception as e:
 		logMsg = "Encountered other exception %s" % (repr(e))
 		log.append(logMsg)
