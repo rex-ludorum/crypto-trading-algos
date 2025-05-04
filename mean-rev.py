@@ -13,6 +13,8 @@ CME_CLOSE_FRIDAY = 165600000000
 CME_OPEN_SUNDAY = 342000000000
 MARCH_1_1972_IN_SECONDS = 68256000
 
+DAYS_IN_EACH_MONTH = [31, 30, 31, 30, 31, 31, 30, 31, 30, 31, 31, 28]
+
 parser = argparse.ArgumentParser(description='Analyze trading data for mean reversion.')
 parser.add_argument('files', nargs="+", help="the files that contain trading data")
 args = parser.parse_args()
@@ -21,6 +23,42 @@ files = vars(args)['files']
 def getMicrosecondsFromDate(date):
 	parsedDate = dateutil.parser.isoparse(date)
 	return round(datetime.datetime.timestamp(parsedDate) * 1000000)
+
+def isLastFridayOfMonth(ts):
+	timestamp = ts // 1000000
+	leapYearCycles = (timestamp - MARCH_1_1972_IN_SECONDS) // ((365 * 4 + 1) * 86400)
+	days = (timestamp - MARCH_1_1972_IN_SECONDS) // 86400
+	daysInCurrentCycle = days % (365 * 4 + 1)
+	yearsInCurrentCycle = daysInCurrentCycle // 365
+	daysInCurrentYear = daysInCurrentCycle % 365
+
+	marchFirstDayOfWeekInCurrentCycle = leapYearCycles * (365 * 4 + 1) % 7
+	marchFirstDayOfWeekInCurrentYear = (marchFirstDayOfWeekInCurrentCycle + yearsInCurrentCycle * 365) % 7
+
+	daysUntilFirstFriday = 0;
+	if marchFirstDayOfWeekInCurrentYear > 2:
+		daysUntilFirstFriday = 9 - marchFirstDayOfWeekInCurrentYear
+	else:
+		daysUntilFirstFriday = 2 - marchFirstDayOfWeekInCurrentYear
+	
+	if yearsInCurrentCycle == 4 and marchFirstDayOfWeekInCurrentCycle == 5:
+		return True
+
+	if (daysInCurrentYear - daysUntilFirstFriday) % 7 != 0:
+		return False
+
+	i = 0
+	while i < len(DAYS_IN_EACH_MONTH):
+		if daysInCurrentYear >= DAYS_IN_EACH_MONTH[i]:
+			daysInCurrentYear -= DAYS_IN_EACH_MONTH[i]
+			i += 1
+		else:
+			break
+
+	if DAYS_IN_EACH_MONTH[i] - daysInCurrentYear - 1 >= 7:
+		return False
+	else:
+		return True
 
 def isDST(ts):
 	timestamp = ts // 1000000
