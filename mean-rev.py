@@ -2,6 +2,8 @@ import argparse
 import datetime
 import dateutil
 import numpy as np
+import math
+import matplotlib.pyplot as plt
 
 MICROSECONDS_IN_HOUR = 3600000000
 MICROSECONDS_IN_DAY = 86400000000
@@ -93,10 +95,12 @@ beforeClosePrices = []
 beforeCloseTimes = []
 afterClosePrices = []
 afterCloseTimes = []
-minuteIncrements = list(range(0, MICROSECONDS_IN_HOUR, 60000000))
+minuteIncrements = list(range(60000000, MICROSECONDS_IN_HOUR + 1, 60000000))
 
 allBeforeCloseInterps = []
 allAfterCloseInterps = []
+allExpiryBeforeCloseInterps = []
+allExpiryAfterCloseInterps = []
 
 for file in files:
 	with open(file, "r") as f:
@@ -108,27 +112,70 @@ for file in files:
 			dst = isDST(microseconds)
 			dayRemainder = microseconds % MICROSECONDS_IN_DAY + dst * MICROSECONDS_IN_HOUR
 			weekRemainder = microseconds % MICROSECONDS_IN_WEEK + dst * MICROSECONDS_IN_HOUR
-			if dayRemainder < ONE_HOUR_BEFORE_CME_CLOSE or dayRemainder >= CME_OPEN:
+			if dayRemainder < ONE_HOUR_BEFORE_CME_CLOSE or dayRemainder > CME_OPEN:
 				if beforeClosePrices:
 					beforeCloseTimes.reverse()
 					beforeClosePrices.reverse()
-					allBeforeCloseInterps.append(np.interp(minuteIncrements, beforeCloseTimes, beforeClosePrices).tolist())
-					allAfterCloseInterps.append(np.interp(minuteIncrements, afterCloseTimes, afterClosePrices).tolist())
+					if isLastFridayOfMonth(microseconds):
+						allExpiryBeforeCloseInterps.append(np.interp(minuteIncrements, beforeCloseTimes, beforeClosePrices).tolist())
+						allExpiryAfterCloseInterps.append(np.interp(minuteIncrements, afterCloseTimes, afterClosePrices).tolist())
+					else:
+						allBeforeCloseInterps.append(np.interp(minuteIncrements, beforeCloseTimes, beforeClosePrices).tolist())
+						allAfterCloseInterps.append(np.interp(minuteIncrements, afterCloseTimes, afterClosePrices).tolist())
 					beforeCloseTimes.clear()
 					beforeClosePrices.clear()
 					afterCloseTimes.clear()
 					afterClosePrices.clear()
 				continue
-			if weekRemainder >= CME_CLOSE_FRIDAY + MICROSECONDS_IN_HOUR and weekRemainder < CME_OPEN_SUNDAY:
+			if weekRemainder > CME_CLOSE_FRIDAY + MICROSECONDS_IN_HOUR and weekRemainder < CME_OPEN_SUNDAY:
 				continue
 
 			if dayRemainder < CME_CLOSE:
 				beforeClosePrices.append(float(data[3]))
 				beforeCloseTimes.append(CME_CLOSE - dayRemainder)
-			else:
+			elif dayRemainder > CME_CLOSE:
 				afterClosePrices.append(float(data[3]))
 				afterCloseTimes.append(dayRemainder - CME_CLOSE)
 
+allDiffs = []
+allExpiryDiffs = []
+
+atLeastOnePctDiff = 0
 for idx, l in enumerate(allBeforeCloseInterps):
-	diffs = [abs(x - y) / x * 100 for x, y in zip(l, allAfterCloseInterps[idx])]
-	print(diffs)
+	if (max(l) - min(l)) / math.sqrt(min(l) * max(l)) > 0.01:
+		atLeastOnePctDiff += 1
+		allDiffs.append([abs(x - y) / x * 100 for x, y in zip(l, allAfterCloseInterps[idx])])
+
+atLeastOnePctDiffExpiry = 0
+for idx, l in enumerate(allExpiryBeforeCloseInterps):
+	print((max(l) - min(l)) / math.sqrt(min(l) * max(l)))
+	if (max(l) - min(l)) / math.sqrt(min(l) * max(l)) > 0.01:
+		atLeastOnePctDiffExpiry += 1
+		allExpiryDiffs.append([abs(x - y) / x * 100 for x, y in zip(l, allExpiryAfterCloseInterps[idx])])
+
+allDiffs = np.array(allDiffs)
+allExpiryDiffs = np.array(allExpiryDiffs)
+
+medianDiffs = np.array(np.median(allDiffs, axis=0))
+medianExpiryDiffs = np.array(np.median(allExpiryDiffs, axis=0))
+
+print("Days with at least a one percent change: " + str(atLeastOnePctDiff / len(allBeforeCloseInterps)))
+print(medianDiffs)
+print("Expiry days with at least a one percent change: " + str(atLeastOnePctDiffExpiry / len(allExpiryBeforeCloseInterps)))
+print(medianExpiryDiffs)
+
+x = list(range(1, 61))
+plt.plot(x, medianDiffs)
+plt.xlabel("Minutes after close")
+plt.ylabel("% difference from before close")
+plt.title("Median mean reversion on non-expiry days with a significant trend leading up to CME close")
+plt.grid(True)
+plt.show()
+
+plt.figure()
+plt.plot(x, medianExpiryDiffs)
+plt.xlabel("Minutes after close")
+plt.ylabel("% difference from before close")
+plt.title("Median mean reversion on expiry days with a significant trend leading up to CME close")
+plt.grid(True)
+plt.show()
