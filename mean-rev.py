@@ -4,6 +4,8 @@ import dateutil
 import numpy as np
 import math
 import matplotlib.pyplot as plt
+import operator
+from functools import reduce
 
 MICROSECONDS_IN_HOUR = 3600000000
 MICROSECONDS_IN_DAY = 86400000000
@@ -138,6 +140,7 @@ for file in files:
 				afterCloseTimes.append(dayRemainder - CME_CLOSE)
 
 allDiffs = []
+returns = []
 allExpiryDiffs = []
 
 atLeastOnePctDiff = 0
@@ -145,37 +148,54 @@ for idx, l in enumerate(allBeforeCloseInterps):
 	if (max(l) - min(l)) / math.sqrt(min(l) * max(l)) > 0.01:
 		atLeastOnePctDiff += 1
 		allDiffs.append([abs(x - y) / x * 100 for x, y in zip(l, allAfterCloseInterps[idx])])
+		if l[0] >= l[-1]:
+			returns.append(2 - allAfterCloseInterps[idx][-1] / allAfterCloseInterps[idx][0])
+		else:
+			returns.append(allAfterCloseInterps[idx][-1] / allAfterCloseInterps[idx][0])
 
 atLeastOnePctDiffExpiry = 0
 for idx, l in enumerate(allExpiryBeforeCloseInterps):
-	print((max(l) - min(l)) / math.sqrt(min(l) * max(l)))
+	# print((max(l) - min(l)) / math.sqrt(min(l) * max(l)))
 	if (max(l) - min(l)) / math.sqrt(min(l) * max(l)) > 0.01:
 		atLeastOnePctDiffExpiry += 1
 		allExpiryDiffs.append([abs(x - y) / x * 100 for x, y in zip(l, allExpiryAfterCloseInterps[idx])])
 
+if not allDiffs:
+	allDiffs.append([])
+
+if not allExpiryDiffs:
+	allExpiryDiffs.append([])
+
 allDiffs = np.array(allDiffs)
 allExpiryDiffs = np.array(allExpiryDiffs)
 
-medianDiffs = np.array(np.median(allDiffs, axis=0))
-medianExpiryDiffs = np.array(np.median(allExpiryDiffs, axis=0))
+medianDiffs = np.median(allDiffs, axis=0).tolist()
+medianExpiryDiffs = np.median(allExpiryDiffs, axis=0).tolist()
 
 print("Days with at least a one percent change: " + str(atLeastOnePctDiff / len(allBeforeCloseInterps)))
 print(medianDiffs)
+
+totalReturn = reduce(operator.mul, returns, 1)
+print("Total return: " + str(totalReturn))
+print(returns)
+
 print("Expiry days with at least a one percent change: " + str(atLeastOnePctDiffExpiry / len(allExpiryBeforeCloseInterps)))
 print(medianExpiryDiffs)
 
 x = list(range(1, 61))
-plt.plot(x, medianDiffs)
-plt.xlabel("Minutes after close")
-plt.ylabel("% difference from before close")
-plt.title("Median mean reversion on non-expiry days with a significant trend leading up to CME close")
-plt.grid(True)
-plt.show()
+if medianDiffs:
+	plt.plot(x, medianDiffs)
+	plt.xlabel("Minutes after close")
+	plt.ylabel("% difference from before close")
+	plt.title("Median mean reversion on non-expiry days with a significant trend leading up to CME close")
+	plt.grid(True)
 
-plt.figure()
-plt.plot(x, medianExpiryDiffs)
-plt.xlabel("Minutes after close")
-plt.ylabel("% difference from before close")
-plt.title("Median mean reversion on expiry days with a significant trend leading up to CME close")
-plt.grid(True)
+if medianExpiryDiffs:
+	plt.figure()
+	plt.plot(x, medianExpiryDiffs)
+	plt.xlabel("Minutes after close")
+	plt.ylabel("% difference from before close")
+	plt.title("Median mean reversion on expiry days with a significant trend leading up to CME close")
+	plt.grid(True)
+
 plt.show()
