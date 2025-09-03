@@ -22,6 +22,8 @@ MAX_WINDOW_SIZE = 200
 MIN_WINDOW_SIZE = 40
 MAX_OFFSET = 120
 
+LATE_TRADE_GAP = 1000000
+
 class RetVal(Enum):
 	WAIT = auto()
 	SUCCESS = auto()
@@ -215,6 +217,20 @@ def getGap(endId, endTime, startTime, lastTrade, missedTrades, windows, file):
 		print(logMsg)
 		# print(responseTrades)
 
+		if max(len(responseTrades), length) > ONE_SECOND_MAX_TRADES and endTime - startTime > 1:
+			lastTradeTime = datetime.datetime.fromtimestamp(int(lastTrade['Time']) // 1000000, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
+			logMsg = "Moving gap back, lastTrade has timestamp %s.%s" % (lastTradeTime, str((int(lastTrade['Time']) % 1000000)).zfill(6))
+			print(logMsg)
+			return RetVal.GAP_EXCEEDED
+
+		dropLateTrades(responseTrades)
+		dropMoreLateTrades(responseTrades, lastTrade)
+
+		if not responseTrades:
+			logMsg = "HTTP response contains 0 trades (after dropping)"
+			print(logMsg)
+			return RetVal.SUCCESS
+
 		tradeId = int(lastTrade['tradeId']) + 1
 		idx = next((i for i, x in enumerate(responseTrades) if int(x['trade_id']) >= tradeId), -1)
 		if idx != -1:
@@ -326,6 +342,20 @@ def cleanTrades(trades):
 			if idx + 1 >= len(trades):
 				break
 	return length
+
+def dropLateTrades(trades):
+	for idx, trade in enumerate(trades):
+		if idx + 1 >= len(trades):
+			return
+		if int(trades[idx + 1]["trade_id"]) - int(trade["trade_id"]) >= LATE_TRADE_GAP:
+			print("Dropping trades past %s" % trades[idx + 1]["trade_id"])
+			del trades[idx + 1:]
+
+def dropMoreLateTrades(trades, lastTrade):
+	for idx, trade in enumerate(trades):
+		if int(trade["trade_id"]) - int(lastTrade["tradeId"]) >= LATE_TRADE_GAP:
+			print("Dropping trades past %s" % trades[idx]["trade_id"])
+			del trades[idx:]
 
 def getRanges(trades):
 	if len(trades) == 1:
