@@ -74,15 +74,6 @@ def getTradeIds(records):
 
 	return tradeIds
 
-def writeRecords(records, startDate, endDate):
-	with open('%s_%s_%s.csv' % (symbol, startDate.replace("T", "-").replace(":", "."), endDate.replace("T", "-").replace(":", ".")), 'w') as file:
-		file.write(",".join(["time", "measure_name", "symbol", "tradeId", "price", "size", "isBuyerMaker"]) + '\n')
-		for record in records:
-			tempRecord = record.copy()
-			tempRecord.insert(1, symbol)
-			tempRecord.insert(1, "price")
-			file.write(",".join(tempRecord) + '\n')
-
 # Timestream does not allow two records with the same timestamp and dimensions to have different measure values
 # Therefore, add one us to the later timestamp
 def updateRecordTime(record, lastTrade):
@@ -407,7 +398,7 @@ def getMissedRanges(ids):
 				ranges.append(str(lastContiguousId) + "-" + str(trade))
 	return ranges
 
-parser = argparse.ArgumentParser(description='Collect trading data from Coinbase and send it to AWS Timestream.')
+parser = argparse.ArgumentParser(description='Collect trading data from Coinbase and save it to a file.')
 parser.add_argument('symbol', help='the trading pair to collect data from', choices=['BTC-USD', 'ETH-USD'])
 parser.add_argument('startId', help='the trade ID of the trade preceding the gap', type=int)
 parser.add_argument('startTimestamp', help='the timestamp of the trade preceding the gap in seconds, rounded down', type=int)
