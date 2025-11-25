@@ -142,6 +142,7 @@ def getMissedRanges(ids, timestamps):
 
 	ranges = []
 	diffs = []
+	lastResponse = []
 	with open('fill.csv', 'w') as file:
 		file.write(",".join(["time", "measure_name", "symbol", "tradeId", "price", "size", "isBuyerMaker"]) + '\n')
 
@@ -161,16 +162,16 @@ def getMissedRanges(ids, timestamps):
 					ranges.append(str(prevId + 1))
 				diffs.append(trade - prevId - 1)
 
-				handleGap(timestamps[idx - 1] // 1000000, prevId, timestamps[idx] // 1000000 + 1, trade, file)
+				handleGap(timestamps[idx - 1] // 1000000, prevId, timestamps[idx] // 1000000 + 1, trade, file, lastResponse)
 
 	return (ranges, diffs)
 
-def handleGap(startTime, startId, endTime, endId, file):
+def handleGap(startTime, startId, endTime, endId, file, lastResponse):
 	windowOffset = endTime - startTime
 	filledTrades = []
 
 	while True:
-		while (retVal := getGap(endId, min(startTime + windowOffset, endTime), startId, startTime, filledTrades, file)) == RetVal.WAIT:
+		while (retVal := getGap(endId, min(startTime + windowOffset, endTime), startId, startTime, filledTrades, file, lastResponse)) == RetVal.WAIT:
 			# Rate limit is 30 requests per second
 			time.sleep(1 / 30)
 
@@ -195,7 +196,7 @@ def handleGap(startTime, startId, endTime, endId, file):
 		print("Found trades " + str(getIntRanges(filledTrades)))
 		print("")
 
-def getGap(endId, endTime, startId, startTime, filledTrades, file):
+def getGap(endId, endTime, startId, startTime, filledTrades, file, lastResponse):
 	url = "https://api.coinbase.com/api/v3/brokerage/products/%s/ticker" % (symbol)
 	params = {"limit": MAX_REST_API_TRADES, "start": str(startTime), "end": str(endTime)}
 	jwt_uri = jwt_generator.format_jwt_uri("GET", "/api/v3/brokerage/products/%s/ticker" % (symbol))
@@ -204,25 +205,37 @@ def getGap(endId, endTime, startId, startTime, filledTrades, file):
 	startDate = datetime.datetime.fromtimestamp(startTime, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
 	endDate = datetime.datetime.fromtimestamp(endTime, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
 	try:
-		logMsg = "Sending HTTP request for %s trades from %s to %s" % (symbol, startDate, endDate)
-		print(logMsg)
-		response = requests.get(url, params=params, headers=headers)
-		response.raise_for_status()
-		responseTrades = response.json()['trades']
-		if not responseTrades:
-			logMsg = "HTTP response contains 0 trades"
+		if not lastResponse or lastResponse[0] != startTime or lastResponse[1] != endTime:
+			logMsg = "Sending HTTP request for %s trades from %s to %s" % (symbol, startDate, endDate)
 			print(logMsg)
-			return RetVal.SUCCESS
+			response = requests.get(url, params=params, headers=headers)
+			response.raise_for_status()
+			responseTrades = response.json()['trades']
+			if not responseTrades:
+				logMsg = "HTTP response contains 0 trades"
+				print(logMsg)
+				return RetVal.SUCCESS
 
-		length = cleanTrades(responseTrades)
-		if not responseTrades:
-			logMsg = "HTTP response contains 0 trades (after cleaning)"
+			length = cleanTrades(responseTrades)
+			if not responseTrades:
+				logMsg = "HTTP response contains 0 trades (after cleaning)"
+				print(logMsg)
+				return RetVal.SUCCESS
+
+			logMsg = "HTTP response contains %d trades (%s) (%s - %s)" % (len(responseTrades), ", ".join(getRanges(responseTrades)), responseTrades[0]['time'], responseTrades[-1]['time'])
 			print(logMsg)
-			return RetVal.SUCCESS
+			# print(responseTrades)
 
-		logMsg = "HTTP response contains %d trades (%s) (%s - %s)" % (len(responseTrades), ", ".join(getRanges(responseTrades)), responseTrades[0]['time'], responseTrades[-1]['time'])
-		print(logMsg)
-		# print(responseTrades)
+			lastResponse.clear()
+			lastResponse.append(startTime)
+			lastResponse.append(endTime)
+			lastResponse.append(responseTrades)
+			lastResponse.append(length)
+		else:
+			logMsg = "Reusing last response"
+			print(logMsg)
+			responseTrades = lastResponse[2]
+			length = lastResponse[3]
 
 		tradeId = startId + 1
 		idx = next((i for i, x in enumerate(responseTrades) if int(x['trade_id']) >= tradeId), -1)
@@ -253,7 +266,7 @@ def getGap(endId, endTime, startId, startTime, filledTrades, file):
 		print(logMsg)
 		traceback.print_exc()
 		printError(e)
-		if response.status_code == 429 or response.status_code == 502 or response.status_code == 500 or response.status_code == 401 or response.status_code == 524 or response.status_code == 503 or response.status_code == 404:
+		if response.status_code == 429 or response.status_code == 502 or response.status_code == 500 or response.status_code == 401 or response.status_code == 524 or response.status_code == 503 or response.status_code == 404 or response.status_code == 504:
 			return RetVal.WAIT
 		else:
 			return RetVal.FAILURE

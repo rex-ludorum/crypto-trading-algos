@@ -287,7 +287,7 @@ def getGap(endId, endTime, startTime, lastTrade, missedTrades, windows, file):
 		print(logMsg)
 		traceback.print_exc()
 		printError(e)
-		if response.status_code == 429 or response.status_code == 502 or response.status_code == 500 or response.status_code == 401 or response.status_code == 524 or response.status_code == 503 or response.status_code == 404:
+		if response.status_code == 429 or response.status_code == 502 or response.status_code == 500 or response.status_code == 401 or response.status_code == 524 or response.status_code == 503 or response.status_code == 404 or response.status_code == 504:
 			return RetVal.WAIT
 		else:
 			return RetVal.FAILURE
