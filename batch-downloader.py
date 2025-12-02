@@ -191,12 +191,13 @@ def getGap(endId, endTime, startTime, lastTrade, missedTrades, windows, file):
 		response = requests.get(url, params=params, headers=headers)
 		response.raise_for_status()
 		responseTrades = response.json()['trades']
+		length = len(responseTrades)
 		if not responseTrades:
 			logMsg = "HTTP response contains 0 trades"
 			print(logMsg)
 			return RetVal.SUCCESS
 
-		length = cleanTrades(responseTrades)
+		cleanTrades(responseTrades)
 		if not responseTrades:
 			logMsg = "HTTP response contains 0 trades (after cleaning)"
 			print(logMsg)
@@ -209,7 +210,7 @@ def getGap(endId, endTime, startTime, lastTrade, missedTrades, windows, file):
 		tradeId = int(lastTrade['tradeId']) + 1
 		idx = next((i for i, x in enumerate(responseTrades) if int(x['trade_id']) >= tradeId), -1)
 		if idx != -1:
-			if max(len(responseTrades), length) > ONE_SECOND_MAX_TRADES and endTime - startTime > 1:
+			if length >= MAX_REST_API_TRADES and endTime - startTime > 1:
 				lastTradeTime = datetime.datetime.fromtimestamp(int(lastTrade['Time']) // 1000000, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
 				logMsg = "Moving gap back, lastTrade has timestamp %s.%s" % (lastTradeTime, str((int(lastTrade['Time']) % 1000000)).zfill(6))
 				print(logMsg)
@@ -243,11 +244,9 @@ def getGap(endId, endTime, startTime, lastTrade, missedTrades, windows, file):
 		'''
 
 		# Fringe case for when the lastTrade comes after the trades in the response
-		tradeId = int(lastTrade['tradeId'])
-		if tradeId >= int(responseTrades[-1]['trade_id']):
+		if int(lastTrade['tradeId']) >= int(responseTrades[-1]['trade_id']):
 			return RetVal.SUCCESS
 
-		tradeId = int(lastTrade['tradeId']) + 1
 		while (tradeId < endId):
 			idx = next((i for i, x in enumerate(responseTrades) if int(x['trade_id']) == tradeId), -1)
 			if (idx != -1):
@@ -306,7 +305,6 @@ def cleanTrades(trades):
 			except ValueError:
 				trades.pop(idx)
 	trades.sort(key=cmp_to_key(lambda item1, item2: int(item1['trade_id']) - int(item2['trade_id'])))
-	length = len(trades)
 
 	# For earlier data, there are sometimes duplicate trades
 	for idx, trade in enumerate(trades):
@@ -316,7 +314,6 @@ def cleanTrades(trades):
 			trades.pop(idx + 1)
 			if idx + 1 >= len(trades):
 				break
-	return length
 
 def getRanges(trades):
 	if len(trades) == 1:

@@ -211,12 +211,13 @@ def getGap(endId, endTime, startId, startTime, filledTrades, file, lastResponse)
 			response = requests.get(url, params=params, headers=headers)
 			response.raise_for_status()
 			responseTrades = response.json()['trades']
+			length = len(responseTrades)
 			if not responseTrades:
 				logMsg = "HTTP response contains 0 trades"
 				print(logMsg)
 				return RetVal.SUCCESS
 
-			length = cleanTrades(responseTrades)
+			cleanTrades(responseTrades)
 			if not responseTrades:
 				logMsg = "HTTP response contains 0 trades (after cleaning)"
 				print(logMsg)
@@ -240,7 +241,7 @@ def getGap(endId, endTime, startId, startTime, filledTrades, file, lastResponse)
 		tradeId = startId + 1
 		idx = next((i for i, x in enumerate(responseTrades) if int(x['trade_id']) >= tradeId), -1)
 		if idx != -1:
-			if max(len(responseTrades), length) > ONE_SECOND_MAX_TRADES and endTime - startTime > 1:
+			if length >= MAX_REST_API_TRADES and endTime - startTime > 1:
 				logMsg = "Moving gap back"
 				print(logMsg)
 				return RetVal.GAP_EXCEEDED
@@ -256,7 +257,7 @@ def getGap(endId, endTime, startId, startTime, filledTrades, file, lastResponse)
 				file.write(",".join(record) + '\n')
 				filledTrades.append(tradeId)
 				if (idx == len(responseTrades) - 1):
-					break;
+					break
 			# else:
 				# printError(LookupError("Trade ID " + str(tradeId) + " not found"), "Requests")
 			tradeId += 1
@@ -301,7 +302,7 @@ def cleanTrades(trades):
 			except ValueError:
 				trades.pop(idx)
 	trades.sort(key=cmp_to_key(lambda item1, item2: int(item1['trade_id']) - int(item2['trade_id'])))
-	length = len(trades)
+
 	for idx, trade in enumerate(trades):
 		if idx + 1 >= len(trades):
 			break
@@ -309,7 +310,6 @@ def cleanTrades(trades):
 			trades.pop(idx + 1)
 			if idx + 1 >= len(trades):
 				break
-	return length
 
 parser = argparse.ArgumentParser(description='Show the gaps in trading data collected from Coinbase and see if they can be filled.')
 parser.add_argument('file', help='the file to analyze for gaps')
