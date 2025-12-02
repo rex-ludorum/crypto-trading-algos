@@ -259,7 +259,7 @@ def getGap(endId, endTime, startTime, lastTrade, missedTrades, windows, file):
 				file.write(",".join(tempRecord) + '\n')
 				# How do we know if we got all the trades in this given window or if there are still missing ones after the last?
 				if (idx == len(responseTrades) - 1):
-					break;
+					break
 			else:
 				missedTrades.append(tradeId)
 				# printError(LookupError("Trade ID " + str(tradeId) + " not found"), "Requests")
