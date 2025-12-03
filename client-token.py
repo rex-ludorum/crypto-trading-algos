@@ -4,6 +4,7 @@ import time
 import traceback
 import os
 import datetime
+import dateutil
 import argparse
 
 DATABASE_NAME = "coinbase-websocket-data"
@@ -14,6 +15,12 @@ AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
 REGION_NAME = "us-east-2"
 
 CLIENT_TOKEN = "clientTokenClientTokenClientToken1"
+
+def getMicrosecondsFromDate(date):
+	date = date.replace(" ", "T")
+	date += "Z"
+	parsedDate = dateutil.parser.isoparse(date)
+	return round(datetime.datetime.timestamp(parsedDate) * 1000000)
 
 def getFirstNextToken():
 	queryClient = boto3.client('timestream-query', region_name=REGION_NAME, aws_access_key_id=ACCESS_KEY, aws_secret_access_key=AWS_SECRET_ACCESS_KEY)
@@ -89,7 +96,8 @@ def saveToFile():
 		print("No NextToken:")
 		print(json.dumps(response, indent=2))
 		if checkResponse(response, queryId):
-			with open('%s_%s_%s' % (symbol, startDate.replace(" ", "-").replace(":", "."), endDate.replace(" ", "-").replace(":", ".")), 'w') as file:
+			with open('%s_%s_%s.csv' % (symbol, startDate.replace(" ", "-").replace(":", "."), endDate.replace(" ", "-").replace(":", ".")), 'w') as file:
+				file.write(",".join(["time", "measure_name", "symbol", "tradeId", "price", "size", "isBuyerMaker"]) + '\n')
 				for row in response['Rows']:
 					rowData = row['Data']
 					date = rowData[2]['ScalarValue']
@@ -97,11 +105,12 @@ def saveToFile():
 					price = rowData[4]['ScalarValue']
 					isBuyerMaker = rowData[5]['ScalarValue']
 					tradeId = rowData[6]['ScalarValue']
-					file.write(" ".join([tradeId, date, price, qty, isBuyerMaker]) + '\n')
+					file.write(",".join([str(getMicrosecondsFromDate(date)), "price", symbol, tradeId, price, qty, isBuyerMaker]) + '\n')
 		return
 	else:
 		nextToken = response["NextToken"]
-	with open('%s_%s_%s' % (symbol, startDate.replace(" ", "-").replace(":", "."), endDate.replace(" ", "-").replace(":", ".")), 'w') as file:
+	with open('%s_%s_%s.csv' % (symbol, startDate.replace(" ", "-").replace(":", "."), endDate.replace(" ", "-").replace(":", ".")), 'w') as file:
+		file.write(",".join(["time", "measure_name", "symbol", "tradeId", "price", "size", "isBuyerMaker"]) + '\n')
 		response = pullData(nextToken)
 		if not checkResponse(response, queryId):
 			return
@@ -114,7 +123,7 @@ def saveToFile():
 				price = rowData[4]['ScalarValue']
 				isBuyerMaker = rowData[5]['ScalarValue']
 				tradeId = rowData[6]['ScalarValue']
-				file.write(" ".join([tradeId, date, price, qty, isBuyerMaker]) + '\n')
+				file.write(",".join([str(getMicrosecondsFromDate(date)), "price", symbol, tradeId, price, qty, isBuyerMaker]) + '\n')
 			if "NextToken" in response:
 				nextToken = response['NextToken']
 				response = pullData(nextToken)
