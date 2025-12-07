@@ -66,26 +66,18 @@ def prepareRecord(response):
 	]
 	return record
 
-# Obtain the range of aggregate IDs we are writing
-def getTradeIds(records):
-	tradeIds = []
-	for record in records:
-		tradeIds.append(int(record[1]))
-
-	return tradeIds
-
 # Timestream does not allow two records with the same timestamp and dimensions to have different measure values
 # Therefore, add at least one us to the later timestamp and leave space for missing records if the trade ID leaves a gap between the last trade
 def updateRecordTime(record, lastTrade):
 	recordTime = record[0]
-	if lastTrade and lastTrade['Time'] != '0' and int(record[0]) <= int(lastTrade['Time']) + int(lastTrade['offset']):
-		record[0] = str(int(lastTrade['Time']) + int(lastTrade['offset']) + int(getTradeIds([record])[0]) - int(lastTrade['tradeId']))
+	if lastTrade and lastTrade['Time'] != '0' and int(record[0]) <= int(lastTrade['Time']) + int(lastTrade['offset']) + int(record[1]) - int(lastTrade['tradeId']):
+		record[0] = str(int(lastTrade['Time']) + int(lastTrade['offset']) + int(record[1]) - int(lastTrade['tradeId']))
 		# print("Time %s for %s conflicts with last trade time (%s with offset %s, tradeId %s), updating to %s" % (recordTime, symbol, lastTrade['Time'], lastTrade['offset'], lastTrade['tradeId'], record['Time']))
-		lastTrade['offset'] = str(int(lastTrade['offset']) + int(getTradeIds([record])[0]) - int(lastTrade['tradeId']))
+		lastTrade['offset'] = str(int(lastTrade['offset']) + int(record[1]) - int(lastTrade['tradeId']))
 	else:
 		lastTrade['Time'] = recordTime
 		lastTrade['offset'] = str(0)
-	lastTrade['tradeId'] = getTradeIds([record])[0]
+	lastTrade['tradeId'] = record[1]
 
 def adjustWindow(record, windows):
 	recordTime = str(int(record[0]) // 1000000)
