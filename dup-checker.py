@@ -16,9 +16,9 @@ def checkGaps():
 				id = int(data[0])
 
 			if id in s:
-				ids.append(int(data[0]))
+				ids.append(id)
 			else:
-				s.add(int(data[0]))
+				s.add(id)
 
 		missedRanges = getMissedRanges(ids)
 		print(missedRanges)

@@ -147,7 +147,7 @@ args = parser.parse_args()
 symbol = vars(args)['symbol']
 startDate = datetime.datetime.fromtimestamp(vars(args)['startTimestamp'], datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 endDate = datetime.datetime.fromtimestamp(vars(args)['endTimestamp'], datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-queryString = 'SELECT * FROM "coinbase-websocket-data"."%s" WHERE time between TIMESTAMP \'%s\' and TIMESTAMP \'%s\' ORDER BY time asc' % (symbol, startDate, endDate)
+queryString = 'SELECT * FROM "%s"."%s" WHERE time between TIMESTAMP \'%s\' and TIMESTAMP \'%s\' ORDER BY time asc' % (DATABASE_NAME, symbol, startDate, endDate)
 
 queryClient = boto3.client('timestream-query', region_name=REGION_NAME, aws_access_key_id=ACCESS_KEY, aws_secret_access_key=AWS_SECRET_ACCESS_KEY)
 
