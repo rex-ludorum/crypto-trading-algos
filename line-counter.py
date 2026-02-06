@@ -1,3 +1,6 @@
+# ETH: 645966456 vs 646262619 (296163 missed)
+# BTC: 765246194 vs 765615104 (368910 missed)
+
 import argparse
 
 def countTrades():
