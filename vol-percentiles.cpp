@@ -173,7 +173,7 @@ int main(int argc, char *argv[]) {
 				micros;
 				 */
 
-				long long timestamp = stod(splits[0]);
+				long long timestamp = stoll(splits[0]);
 				timestamps.emplace_back(timestamp);
 
 				// ids.emplace_back(stoi(splits[0]));
