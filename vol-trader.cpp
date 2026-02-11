@@ -1,6 +1,8 @@
 #include <CL/opencl.hpp>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <format>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -13,6 +15,7 @@
 
 using std::boolalpha;
 using std::fixed;
+using std::format;
 using std::generate;
 using std::get;
 using std::get_time;
@@ -48,6 +51,7 @@ using std::endl;
 #define ONE_HOUR_MICROSECONDS 3600000000
 #define FIFTEEN_MINUTES_MICROSECONDS 900000000
 #define ONE_MINUTE_MICROSECONDS 60000000
+#define ONE_YEAR_MICROSECONDS 31536000000000
 
 #define NUM_WINDOWS 4
 
@@ -259,6 +263,10 @@ string joinStrings(tuple<bool, double, string, int> t) {
 	return s;
 }
 
+double capitalToAnnualizedReturn(double capital, long long t1, long long t2) {
+	return (pow(capital, ONE_YEAR_MICROSECONDS / (double)(t2 - t1)) - 1) * 100;
+}
+
 int processTrades(cl::CommandQueue &queue, cl::Kernel &kernel,
 									vector<tradeWithoutDate> &tradesWithoutDates,
 									vector<combo> &comboVect, cl::Buffer &inputTrades,
@@ -348,6 +356,7 @@ int processTrades(cl::CommandQueue &queue, cl::Kernel &kernel,
 		globalIdx += minTradeId;
 
 		if (currIdx + currSize >= tradesWithoutDates.size()) {
+			currIdx += minTradeId;
 			break;
 		}
 
@@ -478,6 +487,8 @@ void processTradesWithListing(cl::CommandQueue &queue,
 int main(int argc, char *argv[]) {
 	bool writeResults = false, listTrades = false;
 
+	bool isBTC;
+
 	int opt;
 	while ((opt = getopt(argc, argv, "wl")) != -1) {
 		switch (opt) {
@@ -503,6 +514,12 @@ int main(int argc, char *argv[]) {
 		exit(EXIT_FAILURE);
 	}
 
+	string symbol(argv[optind]);
+	if (symbol.find("BTC") != string::npos)
+		isBTC = true;
+	else
+		isBTC = false;
+
 #if defined(__WIN64)
 	_putenv("TZ=/usr/share/zoneinfo/UTC");
 #elif defined(__linux)
@@ -516,20 +533,23 @@ int main(int argc, char *argv[]) {
 	generate(windows.begin(), windows.end(),
 					 [n]() mutable { return n += FIFTEEN_MINUTES_MICROSECONDS; });
 
-	vector<double> stopLosses(6);
+	vector<double> stopLosses(12);
 	double x = 0;
 	generate(stopLosses.begin(), stopLosses.end(),
-					 [x]() mutable { return x += 0.5; });
+					 [x]() mutable { return x += 0.25; });
 
-	vector<double> targets(11);
-	x = 0.5;
-	generate(targets.begin(), targets.end(), [x]() mutable { return x += 0.5; });
+	vector<double> targets(20);
+	x = 0;
+	generate(targets.begin(), targets.end(), [x]() mutable { return x += 0.25; });
 
 	vector<vector<double>> buyVolPercentiles;
 	vector<vector<double>> sellVolPercentiles;
 
 	ifstream myFile;
-	myFile.open("buyPercentilesDollarsBTC");
+	if (isBTC)
+		myFile.open("buyPercentilesDollarsBTC");
+	else
+		myFile.open("buyPercentilesDollarsETH");
 	if (myFile.is_open()) {
 		string line;
 		while (getline(myFile, line)) {
@@ -543,7 +563,10 @@ int main(int argc, char *argv[]) {
 		myFile.close();
 	}
 
-	myFile.open("sellPercentilesDollarsBTC");
+	if (isBTC)
+		myFile.open("sellPercentilesDollarsBTC");
+	else
+		myFile.open("sellPercentilesDollarsETH");
 	if (myFile.is_open()) {
 		string line;
 		while (getline(myFile, line)) {
@@ -582,7 +605,8 @@ int main(int argc, char *argv[]) {
 								 get<4>(combos[i][j])};
 			// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
 			// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
-			comboVect.emplace_back(c);
+			if (c.stopLoss < c.target + 2.1)
+				comboVect.emplace_back(c);
 		}
 	}
 
@@ -750,6 +774,9 @@ int main(int argc, char *argv[]) {
 	cout << "Time taken for setup: " << (double)duration.count() / 1000000
 			 << " seconds" << endl;
 
+	long long firstTimestamp = 0, lastTimestamp = 0;
+
+	long long lines = 0;
 	for (int i = optind; i < argc; i++) {
 		myFile.open(argv[i]);
 		if (myFile.is_open()) {
@@ -757,6 +784,7 @@ int main(int argc, char *argv[]) {
 			string line;
 			getline(myFile, line);
 			while (getline(myFile, line)) {
+				lines++;
 				if (justProcessed)
 					cout << "Going back to reading" << endl;
 
@@ -786,6 +814,9 @@ int main(int argc, char *argv[]) {
 						micros;
 				*/
 				t.timestamp = stoll(splits[0]);
+				if (firstTimestamp == 0)
+					firstTimestamp = t.timestamp;
+				lastTimestamp = t.timestamp;
 				// trades.emplace_back(t);
 				tradesWithoutDates.emplace_back(convertTrade(t));
 
@@ -798,9 +829,11 @@ int main(int argc, char *argv[]) {
 
 				justProcessed = false;
 				if (tradesWithoutDates.size() == TRADE_CHUNK) {
-					processTrades(queue, volKernel, tradesWithoutDates, comboVect,
-												inputTrades, inputSize, twBetweenRunData, positionDatas,
-												numTradesInIntervalBuf);
+					maxTradesPerInterval =
+							max(maxTradesPerInterval,
+									processTrades(queue, volKernel, tradesWithoutDates, comboVect,
+																inputTrades, inputSize, twBetweenRunData,
+																positionDatas, numTradesInIntervalBuf));
 					justProcessed = true;
 				}
 			}
@@ -809,10 +842,13 @@ int main(int argc, char *argv[]) {
 	}
 
 	if (!justProcessed) {
-		processTrades(queue, volKernel, tradesWithoutDates, comboVect, inputTrades,
-									inputSize, twBetweenRunData, positionDatas,
-									numTradesInIntervalBuf);
+		maxTradesPerInterval =
+				max(maxTradesPerInterval,
+						processTrades(queue, volKernel, tradesWithoutDates, comboVect,
+													inputTrades, inputSize, twBetweenRunData,
+													positionDatas, numTradesInIntervalBuf));
 	}
+	cout << lines << endl;
 
 	/*
 	cl::Buffer inputTrades(context, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY,
@@ -1119,8 +1155,10 @@ int main(int argc, char *argv[]) {
 		outFile.open("resultsVol");
 		if (outFile.is_open()) {
 			for (size_t i = 0; i < comboVect.size(); i++) {
-				outFile << "Stop loss: " << to_string(comboVect[i].stopLoss) << endl;
-				outFile << "Target: " << to_string(comboVect[i].target) << endl;
+				outFile << "Stop loss: "
+								<< format("{:.2f}", (double)comboVect[i].stopLoss) << endl;
+				outFile << "Target: " << format("{:.2f}", (double)comboVect[i].target)
+								<< endl;
 				outFile << "Window: "
 								<< to_string(comboVect[i].window / ONE_MINUTE_MICROSECONDS)
 								<< " minutes" << endl;
@@ -1150,7 +1188,10 @@ int main(int argc, char *argv[]) {
 								<< endl;
 				outFile << "Short losses: " << to_string(tradeRecordsVec[i].shortLosses)
 								<< endl;
-				outFile << "Final capital: " << to_string(tradeRecordsVec[i].capital)
+				outFile << "Annualized return: "
+								<< to_string(
+											 capitalToAnnualizedReturn(tradeRecordsVec[i].capital,
+																								 firstTimestamp, lastTimestamp))
 								<< endl;
 				if (listTrades) {
 					for (int j = 0; j < MAX_TOTAL_TRADES; j++) {
@@ -1197,10 +1238,17 @@ int main(int argc, char *argv[]) {
 					tradeRecordsVec.begin();
 			outFile << fixed;
 			outFile << "Max return:" << endl;
-			outFile << "Final capital: " << tradeRecordsVec[maxElementIdx].capital
+			outFile << "Annualized return: "
+							<< to_string(capitalToAnnualizedReturn(
+										 tradeRecordsVec[maxElementIdx].capital, firstTimestamp,
+										 lastTimestamp))
 							<< endl;
-			outFile << "Stop loss: " << comboVect[maxElementIdx].stopLoss << endl;
-			outFile << "Target: " << comboVect[maxElementIdx].target << endl;
+			outFile << "Stop loss: "
+							<< format("{:.2f}", (double)comboVect[maxElementIdx].stopLoss)
+							<< endl;
+			outFile << "Target: "
+							<< format("{:.2f}", (double)comboVect[maxElementIdx].target)
+							<< endl;
 			outFile << "Window: "
 							<< comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS
 							<< " minutes" << endl;
@@ -1242,10 +1290,17 @@ int main(int argc, char *argv[]) {
 													 }) -
 					tradeRecordsVec.begin();
 			outFile << "Best win rate:" << endl;
-			outFile << "Final capital: " << tradeRecordsVec[maxElementIdx].capital
+			outFile << "Annualized return: "
+							<< to_string(capitalToAnnualizedReturn(
+										 tradeRecordsVec[maxElementIdx].capital, firstTimestamp,
+										 lastTimestamp))
 							<< endl;
-			outFile << "Stop loss: " << comboVect[maxElementIdx].stopLoss << endl;
-			outFile << "Target: " << comboVect[maxElementIdx].target << endl;
+			outFile << "Stop loss: "
+							<< format("{:.2f}", (double)comboVect[maxElementIdx].stopLoss)
+							<< endl;
+			outFile << "Target: "
+							<< format("{:.2f}", (double)comboVect[maxElementIdx].target)
+							<< endl;
 			outFile << "Window: "
 							<< comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS
 							<< " minutes" << endl;
@@ -1284,10 +1339,17 @@ int main(int argc, char *argv[]) {
 													 }) -
 					tradeRecordsVec.begin();
 			outFile << "Most trades:" << endl;
-			outFile << "Final capital: " << tradeRecordsVec[maxElementIdx].capital
+			outFile << "Annualized return: "
+							<< to_string(capitalToAnnualizedReturn(
+										 tradeRecordsVec[maxElementIdx].capital, firstTimestamp,
+										 lastTimestamp))
 							<< endl;
-			outFile << "Stop loss: " << comboVect[maxElementIdx].stopLoss << endl;
-			outFile << "Target: " << comboVect[maxElementIdx].target << endl;
+			outFile << "Stop loss: "
+							<< format("{:.2f}", (double)comboVect[maxElementIdx].stopLoss)
+							<< endl;
+			outFile << "Target: "
+							<< format("{:.2f}", (double)comboVect[maxElementIdx].target)
+							<< endl;
 			outFile << "Window: "
 							<< comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS
 							<< " minutes" << endl;
@@ -1334,9 +1396,15 @@ int main(int argc, char *argv[]) {
 			tradeRecordsVec.begin();
 	cout << fixed;
 	cout << "Max return:" << endl;
-	cout << "Final capital: " << tradeRecordsVec[maxElementIdx].capital << endl;
-	cout << "Stop loss: " << comboVect[maxElementIdx].stopLoss << endl;
-	cout << "Target: " << comboVect[maxElementIdx].target << endl;
+	cout << "Annualized return: "
+			 << to_string(
+							capitalToAnnualizedReturn(tradeRecordsVec[maxElementIdx].capital,
+																				firstTimestamp, lastTimestamp))
+			 << endl;
+	cout << "Stop loss: "
+			 << format("{:.2f}", (double)comboVect[maxElementIdx].stopLoss) << endl;
+	cout << "Target: "
+			 << format("{:.2f}", (double)comboVect[maxElementIdx].target) << endl;
 	cout << "Window: "
 			 << comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS
 			 << " minutes" << endl;
@@ -1375,9 +1443,15 @@ int main(int argc, char *argv[]) {
 											 }) -
 			tradeRecordsVec.begin();
 	cout << "Best win rate:" << endl;
-	cout << "Final capital: " << tradeRecordsVec[maxElementIdx].capital << endl;
-	cout << "Stop loss: " << comboVect[maxElementIdx].stopLoss << endl;
-	cout << "Target: " << comboVect[maxElementIdx].target << endl;
+	cout << "Annualized return: "
+			 << to_string(
+							capitalToAnnualizedReturn(tradeRecordsVec[maxElementIdx].capital,
+																				firstTimestamp, lastTimestamp))
+			 << endl;
+	cout << "Stop loss: "
+			 << format("{:.2f}", (double)comboVect[maxElementIdx].stopLoss) << endl;
+	cout << "Target: "
+			 << format("{:.2f}", (double)comboVect[maxElementIdx].target) << endl;
 	cout << "Window: "
 			 << comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS
 			 << " minutes" << endl;
@@ -1413,9 +1487,15 @@ int main(int argc, char *argv[]) {
 											 }) -
 			tradeRecordsVec.begin();
 	cout << "Most trades:" << endl;
-	cout << "Final capital: " << tradeRecordsVec[maxElementIdx].capital << endl;
-	cout << "Stop loss: " << comboVect[maxElementIdx].stopLoss << endl;
-	cout << "Target: " << comboVect[maxElementIdx].target << endl;
+	cout << "Annualized return: "
+			 << to_string(
+							capitalToAnnualizedReturn(tradeRecordsVec[maxElementIdx].capital,
+																				firstTimestamp, lastTimestamp))
+			 << endl;
+	cout << "Stop loss: "
+			 << format("{:.2f}", (double)comboVect[maxElementIdx].stopLoss) << endl;
+	cout << "Target: "
+			 << format("{:.2f}", (double)comboVect[maxElementIdx].target) << endl;
 	cout << "Window: "
 			 << comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS
 			 << " minutes" << endl;
@@ -1444,7 +1524,7 @@ int main(int argc, char *argv[]) {
 			 << endl;
 	cout << endl;
 
-	cout << "Max trades per interval: " << maxTradesPerInterval << endl;
+	if (!listTrades) cout << "Max trades per interval: " << maxTradesPerInterval << endl;
 
 	auto endTime = high_resolution_clock::now();
 	duration = duration_cast<microseconds>(endTime - startTime);
