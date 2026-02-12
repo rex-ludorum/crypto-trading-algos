@@ -523,7 +523,8 @@ int main(int argc, char *argv[]) {
 #if defined(__WIN64)
 	_putenv("TZ=/usr/share/zoneinfo/UTC");
 #elif defined(__linux)
-	putenv("TZ=/usr/share/zoneinfo/UTC");
+	char c[] = "TZ=/usr/share/zoneinfo/UTC";
+	putenv(c);
 #endif
 
 	auto startTime = high_resolution_clock::now();
