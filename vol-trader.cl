@@ -1,15 +1,9 @@
-#define MAX_TOTAL_TRADES 90
-
-#define LOSS_BIT 0
-#define WIN_BIT 1
-#define LONG_BIT 2
-#define SHORT_BIT 3
+#define MAX_TOTAL_TRADES 20618
 
 typedef struct __attribute__ ((packed)) tradeWithoutDate {
 	long timestamp;
 	double price;
 	double qty;
-	int tradeId;
 	uchar isBuyerMaker;
 } tradeWithoutDate;
 
@@ -27,7 +21,7 @@ typedef struct __attribute__ ((packed)) entry {
 } entry;
 
 typedef struct __attribute__ ((packed)) timeWindow {
-	int tradeId;
+	int tradeIdx;
 	long timestamp;
 } timeWindow;
 
@@ -45,7 +39,7 @@ typedef struct __attribute__ ((packed)) positionData {
 	long timestamp;
 	double buyVol;
 	double sellVol;
-	int tradeId;
+	int tradeIdx;
 } positionData;
 
 typedef struct __attribute__ ((packed)) twMetadata {
@@ -59,10 +53,11 @@ typedef struct __attribute__ ((packed)) entryData {
 } entryData;
 
 typedef struct __attribute__ ((packed)) entryAndExit {
+	double profitMargin;
 	int entryIndex;
 	int exitIndex;
-	int longShortWinLoss;
 	entryData e;
+	bool isLong;
 } entryAndExit;
 
 #define MICROSECONDS_IN_HOUR 3600000000
@@ -74,19 +69,18 @@ typedef struct __attribute__ ((packed)) entryAndExit {
 #define CME_OPEN_SUNDAY 342000000000
 
 #define MARCH_1_1972_IN_SECONDS 68256000
+#define DAYS_IN_LEAR_YEAR_CYCLE 1461
+#define SECONDS_IN_DAY 86400
 
 inline int isDST(long ts) {
 	int timestamp = ts / 1000000;
-	int leapYearCycles = (timestamp - MARCH_1_1972_IN_SECONDS) / ((365 * 4 + 1) * 86400);
-	int days = (timestamp - MARCH_1_1972_IN_SECONDS) / 86400;
-	int daysInCurrentCycle = days % (365 * 4 + 1);
-	int yearsInCurrentCycle = daysInCurrentCycle / 365;
+	int days = (timestamp - MARCH_1_1972_IN_SECONDS) / SECONDS_IN_DAY;
+	int daysInCurrentCycle = days % DAYS_IN_LEAR_YEAR_CYCLE;
 	int daysInCurrentYear = daysInCurrentCycle % 365;
 
-	int timeInCurrentDay = timestamp % 86400;
+	int timeInCurrentDay = timestamp % SECONDS_IN_DAY;
 
-	int marchFirstDayOfWeekInCurrentCycle = leapYearCycles * (365 * 4 + 1) % 7;
-	int marchFirstDayOfWeekInCurrentYear = (marchFirstDayOfWeekInCurrentCycle + yearsInCurrentCycle * 365) % 7;
+	int marchFirstDayOfWeekInCurrentYear = (days - daysInCurrentYear) % 7;
 
 	int dstStart = 0;
 	if (marchFirstDayOfWeekInCurrentYear > 4) {
@@ -118,7 +112,7 @@ __kernel void volTrader(__global int* numTrades, __global tradeWithoutDate* trad
 	int ss = tradeRecords[index].shorts;
 	int sw = tradeRecords[index].shortWins;
 	int sl = tradeRecords[index].shortLosses;
-	timeWindow tw = {positionDatas[index].tradeId - twBetweenRuns->twTranslation, positionDatas[index].timestamp};
+	timeWindow tw = {positionDatas[index].tradeIdx - twBetweenRuns->twTranslation, positionDatas[index].timestamp};
 	double buyVol = positionDatas[index].buyVol;
 	double sellVol = positionDatas[index].sellVol;
 	entry e = entries[index];
@@ -164,7 +158,7 @@ __kernel void volTrader(__global int* numTrades, __global tradeWithoutDate* trad
 		}
 
 		if (microseconds - tw.timestamp > c.window) {
-			int k = tw.tradeId;
+			int k = tw.tradeIdx;
 			long newMicroseconds;
 			while (k < i) {
 				newMicroseconds = trades[k].timestamp;
@@ -195,7 +189,7 @@ __kernel void volTrader(__global int* numTrades, __global tradeWithoutDate* trad
 
 	entries[index] = e;
 	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
-	positionDatas[index] = (positionData) {tw.timestamp, buyVol, sellVol, tw.tradeId};
+	positionDatas[index] = (positionData) {tw.timestamp, buyVol, sellVol, tw.tradeIdx};
 	numTradesInInterval[index] = tradesInInterval;
 }
 
@@ -212,7 +206,7 @@ __kernel void volTraderWithTrades(__global int* numTrades, __global tradeWithout
 	int ss = tradeRecords[index].shorts;
 	int sw = tradeRecords[index].shortWins;
 	int sl = tradeRecords[index].shortLosses;
-	timeWindow tw = {positionDatas[index].tradeId - twBetweenRuns->twTranslation, positionDatas[index].timestamp};
+	timeWindow tw = {positionDatas[index].tradeIdx - twBetweenRuns->twTranslation, positionDatas[index].timestamp};
 	double buyVol = positionDatas[index].buyVol;
 	double sellVol = positionDatas[index].sellVol;
 	entry e = entries[index];
@@ -222,7 +216,7 @@ __kernel void volTraderWithTrades(__global int* numTrades, __global tradeWithout
 
 	int tradesInInterval = 0;
 
-	entryAndExit currentTrade = {0, 0, 0, {0, 0}};
+	entryAndExit currentTrade = {0, 0, 0, {0, 0}, false};
 
 	for (int i = twBetweenRuns->twStart; i < *numTrades; i++) {
 		double vol = trades[i].qty;
@@ -242,34 +236,36 @@ __kernel void volTraderWithTrades(__global int* numTrades, __global tradeWithout
 				profitMargin = price / e.price;
 				if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
 					capital *= profitMargin;
+					currentTrade.profitMargin = profitMargin;
 					e = (entry) {0.0, false};
 					lw += profitMargin >= 1.0;
 					ll += profitMargin < 1.0;
 					currentTrade.exitIndex = i;
 					entriesAndExits[index * MAX_TOTAL_TRADES + tradesInInterval++] = currentTrade;
-					currentTrade = (entryAndExit) {0, 0, 0, {0, 0}};
+					currentTrade = (entryAndExit) {0, 0, 0, {0, 0}, false};
 				}
 			} else {
 				profitMargin = 2 - price / e.price;
 				if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
 					capital *= profitMargin;
+					currentTrade.profitMargin = profitMargin;
 					e = (entry) {0.0, false};
 					sw += profitMargin >= 1.0;
 					sl += profitMargin < 1.0;
 					currentTrade.exitIndex = i;
 					entriesAndExits[index * MAX_TOTAL_TRADES + tradesInInterval++] = currentTrade;
-					currentTrade = (entryAndExit) {0, 0, 0, {0, 0}};
+					currentTrade = (entryAndExit) {0, 0, 0, {0, 0}, false};
 				}
 			}
 		}
 
 		if (microseconds - tw.timestamp > c.window) {
-			int k = tw.tradeId;
+			int k = tw.tradeIdx;
 			long newMicroseconds;
 			while (k < i) {
 				newMicroseconds = trades[k].timestamp;
 				if (microseconds - newMicroseconds > c.window) {
-					double newVol = trades[k].qty;
+					double newVol = trades[k].qty * trades[k].price;
 					if (trades[k].isBuyerMaker) sellVol -= newVol;
 					else buyVol -= newVol;
 				} else {
@@ -279,15 +275,15 @@ __kernel void volTraderWithTrades(__global int* numTrades, __global tradeWithout
 			}
 			tw = (timeWindow) {k, newMicroseconds};
 		}
-		if (trades[i].isBuyerMaker) sellVol += vol;
-		else buyVol += vol;
+		if (trades[i].isBuyerMaker) sellVol += vol * price;
+		else buyVol += vol * price;
 
 		if (e.price == 0.0) {
 			if (buyVol >= c.buyVolPercentile && !inClose && !onWeekend) {
 				e = (entry) {price, true};
 				ls += 1;
 				currentTrade.entryIndex = i;
-				currentTrade.longShortWinLoss |= 1 << LONG_BIT;
+				currentTrade.isLong = true;
 				currentTrade.e.buyVol = buyVol;
 				currentTrade.e.sellVol = sellVol;
 				entriesAndExits[index * MAX_TOTAL_TRADES + tradesInInterval] = currentTrade;
@@ -295,7 +291,6 @@ __kernel void volTraderWithTrades(__global int* numTrades, __global tradeWithout
 				e = (entry) {price, false};
 				ss += 1;
 				currentTrade.entryIndex = i;
-				currentTrade.longShortWinLoss |= 1 << SHORT_BIT;
 				currentTrade.e.buyVol = buyVol;
 				currentTrade.e.sellVol = sellVol;
 				entriesAndExits[index * MAX_TOTAL_TRADES + tradesInInterval] = currentTrade;
@@ -305,5 +300,5 @@ __kernel void volTraderWithTrades(__global int* numTrades, __global tradeWithout
 
 	entries[index] = e;
 	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
-	positionDatas[index] = (positionData) {tw.timestamp, buyVol, sellVol, tw.tradeId};
+	positionDatas[index] = (positionData) {tw.timestamp, buyVol, sellVol, tw.tradeIdx};
 }

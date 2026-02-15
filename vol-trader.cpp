@@ -1,5 +1,6 @@
 #include <CL/opencl.hpp>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <format>
@@ -7,35 +8,43 @@
 #include <iomanip>
 #include <iostream>
 #include <iterator>
+#include <numeric>
 #include <ranges>
 #include <string>
 #include <tuple>
 #include <unistd.h>
 #include <vector>
 
+using std::accumulate;
+using std::array;
 using std::boolalpha;
-using std::fixed;
 using std::format;
 using std::generate;
 using std::get;
 using std::get_time;
 using std::getline;
 using std::ifstream;
+using std::inner_product;
 using std::istream_iterator;
 using std::istringstream;
 using std::max;
 using std::max_element;
 using std::min;
+using std::min_element;
+using std::minus;
 using std::mktime;
 using std::nullopt;
 using std::ofstream;
 using std::optional;
+using std::ostream;
 using std::setprecision;
+using std::sqrt;
 using std::stod;
 using std::stoi;
 using std::string;
 using std::tm;
 using std::to_string;
+using std::transform;
 using std::tuple;
 using std::vector;
 using std::chrono::duration_cast;
@@ -55,16 +64,21 @@ using std::endl;
 
 #define NUM_WINDOWS 4
 
-#define MAX_TOTAL_TRADES 90
-
-#define LOSS_BIT 0
-#define WIN_BIT 1
-#define LONG_POS_BIT 2
-#define SHORT_POS_BIT 3
+#define MAX_TOTAL_TRADES 20618
 
 #define INCREMENT 1000000
-
 #define TRADE_CHUNK 50000000
+
+#define PERCENTILE_LIMIT 30
+
+#define MARCH_1_1972_IN_SECONDS 68256000
+#define DAYS_IN_LEAP_YEAR_CYCLE 1461
+#define SECONDS_IN_DAY 86400
+
+#define RISK_FREE_RATE 1.01
+
+constexpr array<int, 12> daysInMonths = {31, 30, 31, 30, 31, 31,
+																				 30, 31, 30, 31, 31, 28};
 
 cl::Device getDefaultDevice(); // Return a device found in this OpenCL platform.
 
@@ -179,6 +193,33 @@ vector<string> splitByComma(const string &input) {
 	return ret;
 }
 
+long long getTsOfNextMonth(long long ts) {
+	int timestamp = ts / 1000000;
+	int days = (timestamp - MARCH_1_1972_IN_SECONDS) / SECONDS_IN_DAY;
+	int daysInCurrentCycle = days % DAYS_IN_LEAP_YEAR_CYCLE;
+	int daysInCurrentYear = daysInCurrentCycle % 365;
+	int daysInCurrentYearCopy = daysInCurrentYear;
+	bool isLeapYear = daysInCurrentCycle / 365 >= 3;
+
+	int daysUntilNextMonthFromStartOfCurrentYear = 0;
+	if (daysInCurrentCycle != 1460) {
+		int monthIdx = 0;
+		while (daysInCurrentYear >= 0) {
+			daysUntilNextMonthFromStartOfCurrentYear += daysInMonths[monthIdx];
+			daysInCurrentYear -= daysInMonths[monthIdx++];
+		}
+		if (isLeapYear && monthIdx == 12)
+			daysUntilNextMonthFromStartOfCurrentYear += 1;
+	} else
+		daysUntilNextMonthFromStartOfCurrentYear = 1;
+
+	long long daysUntilNextMonthFromMarchOne =
+			days - daysInCurrentYearCopy + daysUntilNextMonthFromStartOfCurrentYear;
+	return (daysUntilNextMonthFromMarchOne * SECONDS_IN_DAY +
+					MARCH_1_1972_IN_SECONDS) *
+				 1000000;
+}
+
 struct trade {
 	int tradeId;
 	long long timestamp;
@@ -192,7 +233,6 @@ struct __attribute__((packed)) tradeWithoutDate {
 	cl_long timestamp;
 	cl_double price;
 	cl_double qty;
-	cl_int tradeId;
 	cl_uchar isBuyerMaker;
 };
 
@@ -210,10 +250,31 @@ struct __attribute__((packed)) entryData {
 };
 
 struct __attribute__((packed)) entryAndExit {
+	cl_double profitMargin;
 	cl_int entryIndex;
 	cl_int exitIndex;
-	cl_int longShortWinLoss;
 	entryData e;
+	cl_uchar isLong;
+};
+
+struct __attribute__((packed)) detailedTrade {
+	double profitMargin;
+	long long entryTimestamp;
+	long long exitTimestamp;
+	entryData e;
+	bool isLong;
+};
+
+struct perfMetrics {
+	double sharpe;
+	double avgDrawdown;
+	double maxDrawdown;
+	double avgDrawdownLength;
+	double maxDrawdownLength;
+	double avgLossStreak;
+	int maxLossStreak;
+	double avgTradeDuration;
+	double maxTradeDuration;
 };
 
 struct __attribute__((packed)) entry {
@@ -235,7 +296,7 @@ struct __attribute__((packed)) positionData {
 	cl_long timestamp;
 	cl_double buyVol;
 	cl_double sellVol;
-	cl_int tradeId;
+	cl_int tradeIdx;
 };
 
 struct __attribute__((packed)) twMetadata {
@@ -245,7 +306,7 @@ struct __attribute__((packed)) twMetadata {
 
 tradeWithoutDate convertTrade(const trade &orig) {
 	tradeWithoutDate newTrade;
-	newTrade.tradeId = orig.tradeId;
+	// newTrade.tradeId = orig.tradeId;
 	newTrade.timestamp = orig.timestamp;
 	newTrade.price = orig.price;
 	newTrade.qty = orig.qty;
@@ -327,7 +388,6 @@ int processTrades(cl::CommandQueue &queue, cl::Kernel &kernel,
 			cout << "Error for reading positionDatas: " << err << endl;
 			return -1;
 		}
-
 		err = queue.enqueueReadBuffer(numTradesInIntervalBuf, CL_FALSE, 0,
 																	comboVect.size() * sizeof(cl_int),
 																	&numTradesInInterval[0]);
@@ -335,9 +395,6 @@ int processTrades(cl::CommandQueue &queue, cl::Kernel &kernel,
 			cout << "Error for reading numTradesInInterval: " << err << endl;
 			return -1;
 		}
-		maxTradesPerInterval =
-				max(maxTradesPerInterval, *max_element(numTradesInInterval.begin(),
-																							 numTradesInInterval.end()));
 
 		err = queue.finish();
 		if (err != CL_SUCCESS) {
@@ -345,23 +402,26 @@ int processTrades(cl::CommandQueue &queue, cl::Kernel &kernel,
 			return -1;
 		}
 
+		maxTradesPerInterval =
+				max(maxTradesPerInterval, *max_element(numTradesInInterval.begin(),
+																							 numTradesInInterval.end()));
 		int minElementIdx =
-				std::min_element(positionDatasVec.begin(), positionDatasVec.end(),
-												 [](positionData p1, positionData p2) {
-													 return p1.tradeId < p2.tradeId;
-												 }) -
+				min_element(positionDatasVec.begin(), positionDatasVec.end(),
+										[](positionData p1, positionData p2) {
+											return p1.tradeIdx < p2.tradeIdx;
+										}) -
 				positionDatasVec.begin();
-		int minTradeId = positionDatasVec[minElementIdx].tradeId;
-		tw.twTranslation = minTradeId;
-		globalIdx += minTradeId;
+		int minTradeIdx = positionDatasVec[minElementIdx].tradeIdx;
+		tw.twTranslation = minTradeIdx;
+		globalIdx += minTradeIdx;
 
 		if (currIdx + currSize >= tradesWithoutDates.size()) {
-			currIdx += minTradeId;
+			currIdx += minTradeIdx;
 			break;
 		}
 
-		tw.twStart = currSize - minTradeId;
-		currIdx += minTradeId;
+		tw.twStart = currSize - minTradeIdx;
+		currIdx += minTradeIdx;
 	}
 
 	tradesWithoutDates.erase(tradesWithoutDates.begin(),
@@ -369,120 +429,277 @@ int processTrades(cl::CommandQueue &queue, cl::Kernel &kernel,
 	return maxTradesPerInterval;
 }
 
-/*
-void processTradesWithListing(cl::CommandQueue &queue,
+void processTradesWithListing(cl::CommandQueue &queue, cl::Kernel &kernel,
 															vector<tradeWithoutDate> &tradesWithoutDates,
-															size_t currIdx, vector<combo> &comboVect,
-															cl::Buffer inputTrades, cl::Buffer inputSize,
-															cl::Buffer twBetweenRunData, cl::Kernel kernel,
-															cl::Buffer positionDatas,
-															cl::Buffer entriesAndExitsBuf) {
+															vector<combo> &comboVect, cl::Buffer &inputTrades,
+															cl::Buffer &inputSize,
+															cl::Buffer &twBetweenRunData,
+															cl::Buffer &positionDatas,
+															cl::Buffer &entriesAndExitsBuf,
+															vector<vector<detailedTrade>> &allTrades) {
+	size_t currIdx = 0;
+	static size_t globalIdx = 0;
+
 	cl_int err;
 
-	twMetadata tw = {0, 0};
+	static twMetadata tw = {0, 0};
 	vector<positionData> positionDatasVec(comboVect.size(), {0, 0.0, 0.0, 0});
+	vector<cl_int> numTradesInInterval(comboVect.size(), 0);
+
+	bool first = true;
+
+	vector<entryAndExit> entriesAndExits =
+			vector<entryAndExit>(comboVect.size() * MAX_TOTAL_TRADES, entryAndExit{});
 
 	while (true) {
 		size_t currSize =
 				min((size_t)INCREMENT, tradesWithoutDates.size() - currIdx);
+		if (first && tw.twStart != 0) {
+			tw.twStart = currSize - tw.twTranslation;
+			first = false;
+		}
 		err = queue.enqueueWriteBuffer(inputTrades, CL_FALSE, 0,
 																	 currSize * sizeof(tradeWithoutDate),
 																	 &tradesWithoutDates[currIdx]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueWriteBuffer inputTrades: " << err << endl;
-			return 1;
+			return;
 		}
 		err = queue.enqueueWriteBuffer(inputSize, CL_FALSE, 0, sizeof(int),
 																	 &currSize);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueWriteBuffer inputSize: " << err << endl;
-			return 1;
+			return;
 		}
 		err = queue.enqueueWriteBuffer(twBetweenRunData, CL_FALSE, 0,
 																	 sizeof(twMetadata), &tw);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueWriteBuffer twBetweenRunData: " << err << endl;
-			return 1;
+			return;
 		}
-		cout << "Running trades " << currIdx << "-" << currIdx + currSize - 1
-				 << endl;
-		err = queue.enqueueNDRangeKernel(kernel, cl::NullRange,
-																		 cl::NDRange(comboVect.size()));
-		if (err != CL_SUCCESS) {
-			cout << "Error for volKernel: " << err << endl;
-			return 1;
-		}
-		err = queue.enqueueReadBuffer(positionDatas, CL_FALSE, 0,
-																	comboVect.size() * sizeof(positionData),
-																	&positionDatasVec[0]);
-		if (err != CL_SUCCESS) {
-			cout << "Error for reading positionDatas: " << err << endl;
-			return 1;
-		}
-
-		err = queue.enqueueReadBuffer(entriesAndExitsBuf, CL_TRUE, 0,
-																	comboVect.size() * sizeof(entryAndExit) *
-																			MAX_TOTAL_TRADES,
-																	&entriesAndExits[0]);
-		if (err != CL_SUCCESS) {
-			cout << "Error for reading entriesAndExits: " << err << endl;
-			return 1;
-		}
-		// handle trade info
-		for (size_t i = 0; i < comboVect.size(); i++) {
-			for (size_t j = 0; j < MAX_TOTAL_TRADES; j++) {
-				entryAndExit adjustedData = entriesAndExits[i * MAX_TOTAL_TRADES + j];
-				if (adjustedData.entryIndex == 0) {
-					// keep optional value in case there are no trades in this interval?
-					actualEntryIndex = nullopt;
-					break;
-				}
-				if (adjustedData.exitIndex != 0) {
-					if (j == 0 && actualEntryIndex.has_value()) {
-						adjustedData.entryIndex = *actualEntryIndex;
-					} else {
-						adjustedData.entryIndex += tradeOffset;
-					}
-					adjustedData.exitIndex += tradeOffset;
-					allTrades[i].emplace_back(adjustedData);
-				} else {
-					actualEntryIndex = adjustedData.entryIndex + tradeOffset;
-					break;
-				}
-			}
-		}
-		entriesAndExits = vector<entryAndExit>(comboVect.size() * MAX_TOTAL_TRADES,
-																					 entryAndExit{});
 		err = queue.enqueueWriteBuffer(entriesAndExitsBuf, CL_FALSE, 0,
 																	 comboVect.size() * sizeof(entryAndExit) *
 																			 MAX_TOTAL_TRADES,
 																	 &entriesAndExits[0]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for writing entriesAndExits: " << err << endl;
-			return 1;
+			return;
+		}
+		cout << "Running trades " << currIdx << "-" << currIdx + currSize - 1
+				 << " (" << globalIdx << "-" << globalIdx + currSize - 1 << ")" << endl;
+		err = queue.enqueueNDRangeKernel(kernel, cl::NullRange,
+																		 cl::NDRange(comboVect.size()));
+		if (err != CL_SUCCESS) {
+			cout << "Error for volKernel: " << err << endl;
+			return;
+		}
+		err = queue.enqueueReadBuffer(positionDatas, CL_FALSE, 0,
+																	comboVect.size() * sizeof(positionData),
+																	&positionDatasVec[0]);
+		if (err != CL_SUCCESS) {
+			cout << "Error for reading positionDatas: " << err << endl;
+			return;
+		}
+		err = queue.enqueueReadBuffer(entriesAndExitsBuf, CL_TRUE, 0,
+																	comboVect.size() * sizeof(entryAndExit) *
+																			MAX_TOTAL_TRADES,
+																	&entriesAndExits[0]);
+		if (err != CL_SUCCESS) {
+			cout << "Error for reading entriesAndExits: " << err << endl;
+			return;
 		}
 
 		err = queue.finish();
 		if (err != CL_SUCCESS) {
 			cout << "Error for finish: " << err << endl;
-			return 1;
+			return;
 		}
-		if (currIdx + currSize >= tradesWithoutDates.size())
-			break;
+
+		// handle trade info
+		for (size_t i = 0; i < comboVect.size(); i++) {
+			for (size_t j = 0; j < MAX_TOTAL_TRADES; j++) {
+				entryAndExit e = entriesAndExits[i * MAX_TOTAL_TRADES + j];
+				if (e.entryIndex == 0 && e.exitIndex == 0) {
+					break;
+				}
+				if (e.exitIndex != 0) {
+					if (e.entryIndex == 0) {
+						allTrades[i].back().profitMargin = e.profitMargin;
+						allTrades[i].back().exitTimestamp =
+								tradesWithoutDates[e.exitIndex].timestamp;
+					} else {
+						detailedTrade d = {
+								e.profitMargin, tradesWithoutDates[e.entryIndex].timestamp,
+								tradesWithoutDates[e.exitIndex].timestamp, e.e, (bool)e.isLong};
+						allTrades[i].emplace_back(d);
+					}
+				} else {
+					detailedTrade d = {0, tradesWithoutDates[e.entryIndex].timestamp, 0,
+														 e.e, (bool)e.isLong};
+					allTrades[i].emplace_back(d);
+					break;
+				}
+			}
+		}
+
 		int minElementIdx =
-				std::min_element(positionDatasVec.begin(), positionDatasVec.end(),
-												 [](positionData p1, positionData p2) {
-													 return p1.tradeId < p2.tradeId;
-												 }) -
+				min_element(positionDatasVec.begin(), positionDatasVec.end(),
+										[](positionData p1, positionData p2) {
+											return p1.tradeIdx < p2.tradeIdx;
+										}) -
 				positionDatasVec.begin();
-		int minTradeId = positionDatasVec[minElementIdx].tradeId;
-		tw.twTranslation = minTradeId;
-		tw.twStart = currSize - minTradeId;
-		currIdx += minTradeId;
-		tradeOffset += minTradeId;
+		int minTradeIdx = positionDatasVec[minElementIdx].tradeIdx;
+		tw.twTranslation = minTradeIdx;
+		globalIdx += minTradeIdx;
+
+		if (currIdx + currSize >= tradesWithoutDates.size()) {
+			currIdx += minTradeIdx;
+			break;
+		}
+
+		tw.twStart = currSize - minTradeIdx;
+		currIdx += minTradeIdx;
+		// tradeOffset += minTradeIdx;
+	}
+
+	tradesWithoutDates.erase(tradesWithoutDates.begin(),
+													 tradesWithoutDates.begin() + currIdx);
+}
+
+void analyzePerf(vector<perfMetrics> &allPerfMetrics,
+								 vector<vector<detailedTrade>> &allTrades) {
+	for (size_t i = 0; i < allTrades.size(); i++) {
+		if (allTrades[i].empty())
+			continue;
+
+		// Discard incomplete trades
+		if (allTrades[i].back().exitTimestamp == 0)
+			allTrades[i].pop_back();
+		if (allTrades[i].empty())
+			continue;
+
+		perfMetrics p;
+		vector<double> monthlyReturns, drawdowns;
+		vector<long long> drawdownLengths, tradeDurations;
+		vector<int> lossStreaks;
+
+		bool onLossStreak = false;
+		double currDrawdown = 1.0, currMonthlyRet = 1.0;
+		int currLossStreak = 0;
+		long long lastLosingExitTimestamp;
+		long long nextMonthTimestamp =
+				getTsOfNextMonth(allTrades[i].front().exitTimestamp);
+
+		for (size_t j = 0; j < allTrades[i].size(); j++) {
+			detailedTrade d = allTrades[i][j];
+			bool win = d.profitMargin >= 1.0;
+			tradeDurations.push_back(d.exitTimestamp - d.entryTimestamp);
+
+			if (win && onLossStreak) {
+				onLossStreak = false;
+				lossStreaks.push_back(currLossStreak);
+				currLossStreak = 0;
+				drawdownLengths.push_back(d.exitTimestamp - lastLosingExitTimestamp);
+				drawdowns.push_back(currDrawdown);
+				currDrawdown = 1.0;
+			} else if (!win) {
+				if (!onLossStreak) {
+					onLossStreak = true;
+					lastLosingExitTimestamp = d.exitTimestamp;
+				}
+
+				currLossStreak++;
+				currDrawdown *= d.profitMargin;
+			}
+
+			if (getTsOfNextMonth(d.exitTimestamp) == nextMonthTimestamp)
+				currMonthlyRet *= d.profitMargin;
+			else {
+				nextMonthTimestamp = getTsOfNextMonth(d.exitTimestamp);
+				monthlyReturns.push_back(currMonthlyRet);
+				currMonthlyRet = d.profitMargin;
+			}
+		}
+
+		if (!monthlyReturns.empty())
+			monthlyReturns.pop_back();
+
+		double meanMonthlyReturn =
+				accumulate(monthlyReturns.begin(), monthlyReturns.end(), 0.0) /
+				monthlyReturns.size();
+		vector<double> diff(monthlyReturns.size());
+		transform(monthlyReturns.begin(), monthlyReturns.end(), diff.begin(),
+							[meanMonthlyReturn](double x) { return x - meanMonthlyReturn; });
+		double sqSum = inner_product(diff.begin(), diff.end(), diff.begin(), 0.0);
+		double stdev = sqrt(sqSum / monthlyReturns.size());
+		p.sharpe = (meanMonthlyReturn - RISK_FREE_RATE) / stdev;
+
+		p.avgDrawdown =
+				accumulate(drawdowns.begin(), drawdowns.end(), 0.0) / drawdowns.size();
+		p.maxDrawdown = *min_element(drawdowns.begin(), drawdowns.end());
+
+		p.avgDrawdownLength =
+				(double)accumulate(drawdownLengths.begin(), drawdownLengths.end(), 0) /
+				drawdownLengths.size();
+		p.maxDrawdownLength =
+				*max_element(drawdownLengths.begin(), drawdownLengths.end());
+
+		p.avgLossStreak =
+				(double)accumulate(lossStreaks.begin(), lossStreaks.end(), 0) /
+				lossStreaks.size();
+		p.maxLossStreak = *max_element(lossStreaks.begin(), lossStreaks.end());
+
+		p.avgTradeDuration =
+				(double)accumulate(tradeDurations.begin(), tradeDurations.end(), 0) /
+				tradeDurations.size();
+		p.maxTradeDuration =
+				*max_element(tradeDurations.begin(), tradeDurations.end());
+
+		allPerfMetrics[i] = p;
 	}
 }
-*/
+
+void outputMetrics(ostream &os, size_t idx, vector<combo> &comboVect,
+									 vector<tradeRecord> &tradeRecordsVec,
+									 vector<perfMetrics> &allPerfMetrics, bool listTrades) {
+	os << "Annualized return: " << tradeRecordsVec[idx].capital << endl;
+	os << "Target: " << format("{:.2f}", (double)comboVect[idx].target) << endl;
+	os << "Stop loss: " << format("{:.2f}", (double)comboVect[idx].stopLoss)
+		 << endl;
+	os << "Window: " << comboVect[idx].window / ONE_MINUTE_MICROSECONDS
+		 << " minutes" << endl;
+	os << "Buy volume threshold: " << comboVect[idx].buyVolPercentile << endl;
+	os << "Sell volume threshold: " << comboVect[idx].sellVolPercentile << endl;
+	os << "Total trades: "
+		 << tradeRecordsVec[idx].shorts + tradeRecordsVec[idx].longs << endl;
+	os << "Wins: "
+		 << tradeRecordsVec[idx].shortWins + tradeRecordsVec[idx].longWins << endl;
+	os << "Losses: "
+		 << tradeRecordsVec[idx].shortLosses + tradeRecordsVec[idx].longLosses
+		 << endl;
+	os << "Longs: " << tradeRecordsVec[idx].longs << endl;
+	os << "Long wins: " << tradeRecordsVec[idx].longWins << endl;
+	os << "Long losses: " << tradeRecordsVec[idx].longLosses << endl;
+	os << "Shorts: " << tradeRecordsVec[idx].shorts << endl;
+	os << "Short wins: " << tradeRecordsVec[idx].shortWins << endl;
+	os << "Short losses: " << tradeRecordsVec[idx].shortLosses << endl;
+
+	if (listTrades) {
+		os << "Sharpe ratio: " << allPerfMetrics[idx].sharpe << endl;
+		os << "Average drawdown: " << allPerfMetrics[idx].avgDrawdown << endl;
+		os << "Max drawdown: " << allPerfMetrics[idx].maxDrawdown << endl;
+		os << "Average loss streak: " << allPerfMetrics[idx].avgLossStreak << endl;
+		os << "Max loss streak: " << allPerfMetrics[idx].maxLossStreak << endl;
+		os << "Average drawdown length: " << allPerfMetrics[idx].avgDrawdownLength
+			 << endl;
+		os << "Max drawdown length: " << allPerfMetrics[idx].maxDrawdownLength
+			 << endl;
+		os << "Average trade duration: " << allPerfMetrics[idx].avgTradeDuration
+			 << endl;
+		os << "Max trade duration: " << allPerfMetrics[idx].maxTradeDuration
+			 << endl;
+	}
+}
 
 int main(int argc, char *argv[]) {
 	bool writeResults = false, listTrades = false;
@@ -559,6 +776,8 @@ int main(int argc, char *argv[]) {
 			for (string s : splits) {
 				rowPercentiles.emplace_back(stod(s));
 			}
+			rowPercentiles.erase(rowPercentiles.begin() + PERCENTILE_LIMIT,
+													 rowPercentiles.end());
 			buyVolPercentiles.emplace_back(rowPercentiles);
 		}
 		myFile.close();
@@ -576,6 +795,8 @@ int main(int argc, char *argv[]) {
 			for (string s : splits) {
 				rowPercentiles.emplace_back(stod(s));
 			}
+			rowPercentiles.erase(rowPercentiles.begin() + PERCENTILE_LIMIT,
+													 rowPercentiles.end());
 			sellVolPercentiles.emplace_back(rowPercentiles);
 		}
 		myFile.close();
@@ -612,9 +833,6 @@ int main(int argc, char *argv[]) {
 	}
 
 	initializeDevice();
-
-	// vector<positionData> positionDatasVec(comboVect.size(),
-	// {tradesWithoutDates[0].timestamp, 0.0, 0.0, 0});
 
 	vector<positionData> positionDatasVec(comboVect.size(), {0, 0.0, 0.0, 0});
 	bool initializedPositions = false;
@@ -768,7 +986,12 @@ int main(int argc, char *argv[]) {
 
 	bool justProcessed = false;
 
-	vector<vector<entryAndExit>> allTrades(comboVect.size());
+	vector<vector<detailedTrade>> allTrades;
+	vector<perfMetrics> allPerfMetrics;
+	if (listTrades) {
+		allTrades.resize(comboVect.size());
+		allPerfMetrics.resize(comboVect.size());
+	}
 
 	auto setupTime = high_resolution_clock::now();
 	auto duration = duration_cast<microseconds>(setupTime - startTime);
@@ -777,7 +1000,6 @@ int main(int argc, char *argv[]) {
 
 	long long firstTimestamp = 0, lastTimestamp = 0;
 
-	long long lines = 0;
 	for (int i = optind; i < argc; i++) {
 		myFile.open(argv[i]);
 		if (myFile.is_open()) {
@@ -785,13 +1007,12 @@ int main(int argc, char *argv[]) {
 			string line;
 			getline(myFile, line);
 			while (getline(myFile, line)) {
-				lines++;
 				if (justProcessed)
 					cout << "Going back to reading" << endl;
 
 				vector<string> splits = splitByComma(line);
 				trade t;
-				t.tradeId = stoi(splits[3]);
+				// t.tradeId = stoi(splits[3]);
 				t.price = stod(splits[4]);
 				t.qty = stod(splits[5]);
 				string isBuyerMakerString = splits[6];
@@ -830,11 +1051,17 @@ int main(int argc, char *argv[]) {
 
 				justProcessed = false;
 				if (tradesWithoutDates.size() == TRADE_CHUNK) {
-					maxTradesPerInterval =
-							max(maxTradesPerInterval,
-									processTrades(queue, volKernel, tradesWithoutDates, comboVect,
-																inputTrades, inputSize, twBetweenRunData,
-																positionDatas, numTradesInIntervalBuf));
+					if (listTrades)
+						processTradesWithListing(queue, volKernel, tradesWithoutDates,
+																		 comboVect, inputTrades, inputSize,
+																		 twBetweenRunData, positionDatas,
+																		 numTradesInIntervalBuf, allTrades);
+					else
+						maxTradesPerInterval = max(
+								maxTradesPerInterval,
+								processTrades(queue, volKernel, tradesWithoutDates, comboVect,
+															inputTrades, inputSize, twBetweenRunData,
+															positionDatas, numTradesInIntervalBuf));
 					justProcessed = true;
 				}
 			}
@@ -843,296 +1070,19 @@ int main(int argc, char *argv[]) {
 	}
 
 	if (!justProcessed) {
-		maxTradesPerInterval =
-				max(maxTradesPerInterval,
-						processTrades(queue, volKernel, tradesWithoutDates, comboVect,
-													inputTrades, inputSize, twBetweenRunData,
-													positionDatas, numTradesInIntervalBuf));
-	}
-	cout << lines << endl;
-
-	/*
-	cl::Buffer inputTrades(context, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY,
-												 INCREMENT * sizeof(tradeWithoutDate), NULL, &err);
-	if (err != CL_SUCCESS) {
-		cout << "Error for inputTrades: " << err << endl;
-		return 1;
-	}
-	cl::Buffer inputSize(context, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY,
-											 sizeof(int), NULL, &err);
-	if (err != CL_SUCCESS) {
-		cout << "Error for inputSize: " << err << endl;
-		return 1;
-	}
-	cl::Buffer twBetweenRunData(context,
-															CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY,
-															sizeof(twMetadata), NULL, &err);
-	if (err != CL_SUCCESS) {
-		cout << "Error for twBetweenRunData: " << err << endl;
-		return 1;
-	}
-	cl::Buffer inputCombos(
-			context, CL_MEM_READ_ONLY | CL_MEM_HOST_NO_ACCESS | CL_MEM_COPY_HOST_PTR,
-			comboVect.size() * sizeof(combo), &comboVect[0], &err);
-	if (err != CL_SUCCESS) {
-		cout << "Error for inputCombos: " << err << endl;
-		return 1;
-	}
-	cl::Buffer entries(
-			context, CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-			comboVect.size() * sizeof(entry), &entriesVec[0], &err);
-	if (err != CL_SUCCESS) {
-		cout << "Error for entries: " << err << endl;
-		return 1;
-	}
-	cl::Buffer tradeRecords(
-			context, CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-			comboVect.size() * sizeof(tradeRecord), &tradeRecordsVec[0], &err);
-	if (err != CL_SUCCESS) {
-		cout << "Error for tradeRecords: " << err << endl;
-		return 1;
-	}
-	cl::Buffer positionDatas(
-			context, CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-			comboVect.size() * sizeof(positionData), &positionDatasVec[0], &err);
-	if (err != CL_SUCCESS) {
-		cout << "Error for positionDatas: " << err << endl;
-		return 1;
-	}
-
-	vector<entryAndExit> entriesAndExits;
-	cl::Buffer entriesAndExitsBuf;
-
-	vector<cl_int> numTradesInInterval;
-	cl::Buffer numTradesInIntervalBuf;
-
-	if (listTrades) {
-		entriesAndExits = vector<entryAndExit>(comboVect.size() * MAX_TOTAL_TRADES,
-																					 entryAndExit{});
-		entriesAndExitsBuf = cl::Buffer(
-				context,
-				CL_MEM_WRITE_ONLY | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-				comboVect.size() * sizeof(entryAndExit) * MAX_TOTAL_TRADES,
-				&entriesAndExits[0], &err);
-		if (err != CL_SUCCESS) {
-			cout << "Error for entriesAndExitsBuf: " << err << endl;
-			return 1;
-		}
-	} else {
-		numTradesInInterval = vector<cl_int>(comboVect.size(), 0);
-		numTradesInIntervalBuf = cl::Buffer(
-				context,
-				CL_MEM_WRITE_ONLY | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-				comboVect.size() * sizeof(cl_int), &numTradesInInterval[0], &err);
-		if (err != CL_SUCCESS) {
-			cout << "Error for numTradesInIntervalBuf: " << err << endl;
-			return 1;
-		}
-	}
-
-	cl::Kernel volKernel;
-	if (listTrades) {
-		volKernel = cl::Kernel(program, "volTraderWithTrades", &err);
-	} else {
-		volKernel = cl::Kernel(program, "volTrader", &err);
-	}
-	if (err != CL_SUCCESS) {
-		cout << "Error for creating volKernel: " << err << endl;
-		return 1;
-	}
-	err = volKernel.setArg(0, inputSize);
-	if (err != CL_SUCCESS) {
-		cout << "Error for volKernel setArg 0: " << err << endl;
-	}
-	err = volKernel.setArg(1, inputTrades);
-	if (err != CL_SUCCESS) {
-		cout << "Error for volKernel setArg 1: " << err << endl;
-	}
-	err = volKernel.setArg(2, inputCombos);
-	if (err != CL_SUCCESS) {
-		cout << "Error for volKernel setArg 2: " << err << endl;
-	}
-	err = volKernel.setArg(3, entries);
-	if (err != CL_SUCCESS) {
-		cout << "Error for volKernel setArg 3: " << err << endl;
-	}
-	err = volKernel.setArg(4, tradeRecords);
-	if (err != CL_SUCCESS) {
-		cout << "Error for volKernel setArg 4: " << err << endl;
-	}
-	err = volKernel.setArg(5, positionDatas);
-	if (err != CL_SUCCESS) {
-		cout << "Error for volKernel setArg 5: " << err << endl;
-	}
-	err = volKernel.setArg(6, twBetweenRunData);
-	if (err != CL_SUCCESS) {
-		cout << "Error for volKernel setArg 6: " << err << endl;
-	}
-
-	if (listTrades) {
-		err = volKernel.setArg(7, entriesAndExitsBuf);
-		if (err != CL_SUCCESS) {
-			cout << "Error for volKernel setArg 7: " << err << endl;
-		}
-	} else {
-		err = volKernel.setArg(7, numTradesInIntervalBuf);
-		if (err != CL_SUCCESS) {
-			cout << "Error for volKernel setArg 7: " << err << endl;
-		}
-	}
-
-	cl::CommandQueue queue(context, device, 0, &err);
-	if (err != CL_SUCCESS) {
-		cout << "Error for queue: " << err << endl;
-		return 1;
-	}
-	*/
-
-	/*
-	cout << tradesWithoutDates.size() << endl;
-	cout << tradesWithoutDates.size() * sizeof(tradeWithoutDate) << endl;
-	cout << comboVect.size() * sizeof(combo) << endl;
-	cout << CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE << endl;
-	*/
-
-	/*
-	auto beforeKernelTime = high_resolution_clock::now();
-	duration = duration_cast<microseconds>(beforeKernelTime - beforeSetupTime);
-	cout << "Time taken to set up kernel: " << (double)duration.count() / 1000000
-			 << " seconds" << endl;
-
-	size_t currIdx = 0;
-	twMetadata tw = {0, 0};
-
-	int maxTradesPerInterval = 0;
-
-	vector<vector<entryAndExit>> allTrades(comboVect.size());
-
-	size_t tradeOffset = 0;
-	optional<size_t> actualEntryIndex;
-
-	while (true) {
-		size_t currSize =
-				min((size_t)INCREMENT, tradesWithoutDates.size() - currIdx);
-		err = queue.enqueueWriteBuffer(inputTrades, CL_FALSE, 0,
-																	 currSize * sizeof(tradeWithoutDate),
-																	 &tradesWithoutDates[currIdx]);
-		if (err != CL_SUCCESS) {
-			cout << "Error for enqueueWriteBuffer inputTrades: " << err << endl;
-			return 1;
-		}
-		err = queue.enqueueWriteBuffer(inputSize, CL_FALSE, 0, sizeof(int),
-																	 &currSize);
-		if (err != CL_SUCCESS) {
-			cout << "Error for enqueueWriteBuffer inputSize: " << err << endl;
-			return 1;
-		}
-		err = queue.enqueueWriteBuffer(twBetweenRunData, CL_FALSE, 0,
-																	 sizeof(twMetadata), &tw);
-		if (err != CL_SUCCESS) {
-			cout << "Error for enqueueWriteBuffer twBetweenRunData: " << err << endl;
-			return 1;
-		}
-		cout << "Running trades " << currIdx << "-" << currIdx + currSize - 1
-				 << endl;
-		err = queue.enqueueNDRangeKernel(volKernel, cl::NullRange,
-																		 cl::NDRange(comboVect.size()));
-		if (err != CL_SUCCESS) {
-			cout << "Error for volKernel: " << err << endl;
-			return 1;
-		}
-		err = queue.enqueueReadBuffer(positionDatas, CL_FALSE, 0,
-																	comboVect.size() * sizeof(positionData),
-																	&positionDatasVec[0]);
-		if (err != CL_SUCCESS) {
-			cout << "Error for reading positionDatas: " << err << endl;
-			return 1;
-		}
-		if (listTrades) {
-			err = queue.enqueueReadBuffer(entriesAndExitsBuf, CL_TRUE, 0,
-																		comboVect.size() * sizeof(entryAndExit) *
-																				MAX_TOTAL_TRADES,
-																		&entriesAndExits[0]);
-			if (err != CL_SUCCESS) {
-				cout << "Error for reading entriesAndExits: " << err << endl;
-				return 1;
-			}
-			// handle trade info
-			for (size_t i = 0; i < comboVect.size(); i++) {
-				for (size_t j = 0; j < MAX_TOTAL_TRADES; j++) {
-					entryAndExit adjustedData = entriesAndExits[i * MAX_TOTAL_TRADES + j];
-					if (adjustedData.entryIndex == 0) {
-						// keep optional value in case there are no trades in this interval?
-						actualEntryIndex = nullopt;
-						break;
-					}
-					if (adjustedData.exitIndex != 0) {
-						if (j == 0 && actualEntryIndex.has_value()) {
-							adjustedData.entryIndex = *actualEntryIndex;
-						} else {
-							adjustedData.entryIndex += tradeOffset;
-						}
-						adjustedData.exitIndex += tradeOffset;
-						allTrades[i].emplace_back(adjustedData);
-					} else {
-						actualEntryIndex = adjustedData.entryIndex + tradeOffset;
-						break;
-					}
-				}
-			}
-			entriesAndExits = vector<entryAndExit>(
-					comboVect.size() * MAX_TOTAL_TRADES, entryAndExit{});
-			err = queue.enqueueWriteBuffer(entriesAndExitsBuf, CL_FALSE, 0,
-																		 comboVect.size() * sizeof(entryAndExit) *
-																				 MAX_TOTAL_TRADES,
-																		 &entriesAndExits[0]);
-			if (err != CL_SUCCESS) {
-				cout << "Error for writing entriesAndExits: " << err << endl;
-				return 1;
-			}
-		} else {
-			err = queue.enqueueReadBuffer(numTradesInIntervalBuf, CL_FALSE, 0,
-																		comboVect.size() * sizeof(cl_int),
-																		&numTradesInInterval[0]);
-			if (err != CL_SUCCESS) {
-				cout << "Error for reading numTradesInInterval: " << err << endl;
-				return 1;
-			}
+		if (listTrades)
+			processTradesWithListing(queue, volKernel, tradesWithoutDates, comboVect,
+															 inputTrades, inputSize, twBetweenRunData,
+															 positionDatas, numTradesInIntervalBuf,
+															 allTrades);
+		else
 			maxTradesPerInterval =
-					max(maxTradesPerInterval, *max_element(numTradesInInterval.begin(),
-																								 numTradesInInterval.end()));
-		}
-		err = queue.finish();
-		if (err != CL_SUCCESS) {
-			cout << "Error for finish: " << err << endl;
-			return 1;
-		}
-		if (currIdx + currSize >= tradesWithoutDates.size())
-			break;
-		int minElementIdx =
-				std::min_element(positionDatasVec.begin(), positionDatasVec.end(),
-												 [](positionData p1, positionData p2) {
-													 return p1.tradeId < p2.tradeId;
-												 }) -
-				positionDatasVec.begin();
-		int minTradeId = positionDatasVec[minElementIdx].tradeId;
-		tw.twTranslation = minTradeId;
-		tw.twStart = currSize - minTradeId;
-		currIdx += minTradeId;
-		tradeOffset += minTradeId;
+					max(maxTradesPerInterval,
+							processTrades(queue, volKernel, tradesWithoutDates, comboVect,
+														inputTrades, inputSize, twBetweenRunData,
+														positionDatas, numTradesInIntervalBuf));
 	}
-	*/
 
-	/*
-	err = queue.enqueueReadBuffer(entries, CL_FALSE, 0, comboVect.size() *
-	sizeof(entry), &entriesVec[0]); if (err != CL_SUCCESS) { cout << "Error for
-	reading entries: " << err << endl; return 1;
-	}
-	err = queue.enqueueReadBuffer(positionDatas, CL_FALSE, 0, comboVect.size() *
-	sizeof(positionData), &positionDatasVec[0]); if (err != CL_SUCCESS) { cout <<
-	"Error for reading positionDatas: " << err << endl; return 1;
-	}
-	*/
 	err = queue.enqueueReadBuffer(tradeRecords, CL_FALSE, 0,
 																comboVect.size() * sizeof(tradeRecord),
 																&tradeRecordsVec[0]);
@@ -1146,240 +1096,169 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
+	for (size_t i = 0; i < tradeRecordsVec.size(); i++) {
+		tradeRecordsVec[i].capital = capitalToAnnualizedReturn(
+				tradeRecordsVec[i].capital, firstTimestamp, lastTimestamp);
+	}
+
 	auto afterKernelTime = high_resolution_clock::now();
 	duration = duration_cast<microseconds>(afterKernelTime - setupTime);
 	cout << "Time taken to run kernel: " << (double)duration.count() / 1000000
 			 << " seconds" << endl;
 
+	if (listTrades) {
+		analyzePerf(allPerfMetrics, allTrades);
+
+		auto afterAnalysisTime = high_resolution_clock::now();
+		duration = duration_cast<microseconds>(afterAnalysisTime - afterKernelTime);
+		cout << "Time taken to analyze models: "
+				 << (double)duration.count() / 1000000 << " seconds" << endl;
+	}
+
 	if (writeResults) {
 		ofstream outFile;
-		outFile.open("resultsVol");
+		if (isBTC)
+			outFile.open("resultsVolBTC");
+		else
+			outFile.open("resultsVolETH");
 		if (outFile.is_open()) {
 			for (size_t i = 0; i < comboVect.size(); i++) {
-				outFile << "Stop loss: "
-								<< format("{:.2f}", (double)comboVect[i].stopLoss) << endl;
-				outFile << "Target: " << format("{:.2f}", (double)comboVect[i].target)
-								<< endl;
-				outFile << "Window: "
-								<< to_string(comboVect[i].window / ONE_MINUTE_MICROSECONDS)
-								<< " minutes" << endl;
-				outFile << "Buy volume threshold: "
-								<< to_string(comboVect[i].buyVolPercentile) << endl;
-				outFile << "Sell volume threshold: "
-								<< to_string(comboVect[i].sellVolPercentile) << endl;
-				outFile << "Total trades: "
-								<< to_string(tradeRecordsVec[i].shorts +
-														 tradeRecordsVec[i].longs)
-								<< endl;
-				outFile << "Wins: "
-								<< to_string(tradeRecordsVec[i].shortWins +
-														 tradeRecordsVec[i].longWins)
-								<< endl;
-				outFile << "Losses: "
-								<< to_string(tradeRecordsVec[i].shortLosses +
-														 tradeRecordsVec[i].longLosses)
-								<< endl;
-				outFile << "Longs: " << to_string(tradeRecordsVec[i].longs) << endl;
-				outFile << "Long wins: " << to_string(tradeRecordsVec[i].longWins)
-								<< endl;
-				outFile << "Long losses: " << to_string(tradeRecordsVec[i].longLosses)
-								<< endl;
-				outFile << "Shorts: " << to_string(tradeRecordsVec[i].shorts) << endl;
-				outFile << "Short wins: " << to_string(tradeRecordsVec[i].shortWins)
-								<< endl;
-				outFile << "Short losses: " << to_string(tradeRecordsVec[i].shortLosses)
-								<< endl;
-				outFile << "Annualized return: "
-								<< to_string(
-											 capitalToAnnualizedReturn(tradeRecordsVec[i].capital,
-																								 firstTimestamp, lastTimestamp))
-								<< endl;
+				outputMetrics(outFile, i, comboVect, tradeRecordsVec, allPerfMetrics,
+											listTrades);
 				if (listTrades) {
-					for (int j = 0; j < MAX_TOTAL_TRADES; j++) {
-						entryAndExit e = allTrades[i][j];
-						if (e.entryIndex == 0)
-							break;
-						else {
-							bool longEntry;
-							if (e.longShortWinLoss & (1 << LONG_POS_BIT)) {
-								outFile << "LONG ";
-								longEntry = true;
-							} else if (e.longShortWinLoss & (1 << SHORT_POS_BIT)) {
-								outFile << "SHORT ";
-								longEntry = false;
-							}
-							outFile << to_string(trades[e.entryIndex].price) << " "
-											<< trades[e.entryIndex].date << " "
-											<< to_string(trades[e.entryIndex].tradeId) << endl;
-							outFile << "Buy volume: " << to_string(e.e.buyVol) << endl;
-							outFile << "Sell volume: " << to_string(e.e.sellVol) << endl;
-							if ((longEntry &&
-									 trades[e.exitIndex].price >= trades[e.entryIndex].price) ||
-									(!longEntry &&
-									 trades[e.exitIndex].price <= trades[e.entryIndex].price)) {
-								outFile << "Profit: " << to_string(trades[e.exitIndex].price)
-												<< " " << trades[e.exitIndex].date << " "
-												<< to_string(trades[e.exitIndex].tradeId) << endl;
-							} else {
-								outFile << "Loss: " << to_string(trades[e.exitIndex].price)
-												<< " " << trades[e.exitIndex].date << " "
-												<< to_string(trades[e.exitIndex].tradeId) << endl;
-								;
-							}
+					for (size_t j = 0; j < allTrades[i].size(); j++) {
+						detailedTrade e = allTrades[i][j];
+						if (e.isLong) {
+							outFile << "Long ";
+						} else {
+							outFile << "Short ";
 						}
+						outFile << to_string(e.entryTimestamp) << endl;
+						outFile << "Buy volume: " << to_string(e.e.buyVol) << endl;
+						outFile << "Sell volume: " << to_string(e.e.sellVol) << endl;
+						if (e.profitMargin >= 1.0) {
+							outFile << "Profit: " << to_string(e.profitMargin);
+						} else {
+							outFile << "Loss: " << to_string(e.profitMargin);
+						}
+						outFile << " " << to_string(e.exitTimestamp) << endl;
 					}
 				}
 				outFile << endl;
 			}
 			int maxElementIdx =
-					std::max_element(tradeRecordsVec.begin(), tradeRecordsVec.end(),
-													 [](tradeRecord t1, tradeRecord t2) {
-														 return t1.capital < t2.capital;
-													 }) -
+					max_element(tradeRecordsVec.begin(), tradeRecordsVec.end(),
+											[](tradeRecord t1, tradeRecord t2) {
+												return t1.capital < t2.capital;
+											}) -
 					tradeRecordsVec.begin();
-			outFile << fixed;
 			outFile << "Max return:" << endl;
-			outFile << "Annualized return: "
-							<< to_string(capitalToAnnualizedReturn(
-										 tradeRecordsVec[maxElementIdx].capital, firstTimestamp,
-										 lastTimestamp))
-							<< endl;
-			outFile << "Stop loss: "
-							<< format("{:.2f}", (double)comboVect[maxElementIdx].stopLoss)
-							<< endl;
-			outFile << "Target: "
-							<< format("{:.2f}", (double)comboVect[maxElementIdx].target)
-							<< endl;
-			outFile << "Window: "
-							<< comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS
-							<< " minutes" << endl;
-			outFile << "Buy volume threshold: "
-							<< comboVect[maxElementIdx].buyVolPercentile << endl;
-			outFile << "Sell volume threshold: "
-							<< comboVect[maxElementIdx].sellVolPercentile << endl;
-			outFile << "Total trades: "
-							<< tradeRecordsVec[maxElementIdx].shorts +
-										 tradeRecordsVec[maxElementIdx].longs
-							<< endl;
-			outFile << "Wins: "
-							<< tradeRecordsVec[maxElementIdx].shortWins +
-										 tradeRecordsVec[maxElementIdx].longWins
-							<< endl;
-			outFile << "Losses: "
-							<< tradeRecordsVec[maxElementIdx].shortLosses +
-										 tradeRecordsVec[maxElementIdx].longLosses
-							<< endl;
-			outFile << "Longs: " << tradeRecordsVec[maxElementIdx].longs << endl;
-			outFile << "Long wins: " << tradeRecordsVec[maxElementIdx].longWins
-							<< endl;
-			outFile << "Long losses: " << tradeRecordsVec[maxElementIdx].longLosses
-							<< endl;
-			outFile << "Shorts: " << tradeRecordsVec[maxElementIdx].shorts << endl;
-			outFile << "Short wins: " << tradeRecordsVec[maxElementIdx].shortWins
-							<< endl;
-			outFile << "Short losses: " << tradeRecordsVec[maxElementIdx].shortLosses
-							<< endl;
+			outputMetrics(outFile, maxElementIdx, comboVect, tradeRecordsVec,
+										allPerfMetrics, listTrades);
 			outFile << endl;
 
 			maxElementIdx =
-					std::max_element(tradeRecordsVec.begin(), tradeRecordsVec.end(),
-													 [](tradeRecord t1, tradeRecord t2) {
-														 return (double)(t1.shortWins + t1.longWins) /
-																				(t1.shorts + t1.longs) <
-																		(double)(t2.shortWins + t2.longWins) /
-																				(t2.shorts + t2.longs);
-													 }) -
+					max_element(tradeRecordsVec.begin(), tradeRecordsVec.end(),
+											[](tradeRecord t1, tradeRecord t2) {
+												return (double)(t1.shortWins + t1.longWins) /
+																	 (t1.shorts + t1.longs) <
+															 (double)(t2.shortWins + t2.longWins) /
+																	 (t2.shorts + t2.longs);
+											}) -
 					tradeRecordsVec.begin();
 			outFile << "Best win rate:" << endl;
-			outFile << "Annualized return: "
-							<< to_string(capitalToAnnualizedReturn(
-										 tradeRecordsVec[maxElementIdx].capital, firstTimestamp,
-										 lastTimestamp))
-							<< endl;
-			outFile << "Stop loss: "
-							<< format("{:.2f}", (double)comboVect[maxElementIdx].stopLoss)
-							<< endl;
-			outFile << "Target: "
-							<< format("{:.2f}", (double)comboVect[maxElementIdx].target)
-							<< endl;
-			outFile << "Window: "
-							<< comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS
-							<< " minutes" << endl;
-			outFile << "Buy volume threshold: "
-							<< comboVect[maxElementIdx].buyVolPercentile << endl;
-			outFile << "Sell volume threshold: "
-							<< comboVect[maxElementIdx].sellVolPercentile << endl;
-			outFile << "Total trades: "
-							<< tradeRecordsVec[maxElementIdx].shorts +
-										 tradeRecordsVec[maxElementIdx].longs
-							<< endl;
-			outFile << "Wins: "
-							<< tradeRecordsVec[maxElementIdx].shortWins +
-										 tradeRecordsVec[maxElementIdx].longWins
-							<< endl;
-			outFile << "Losses: "
-							<< tradeRecordsVec[maxElementIdx].shortLosses +
-										 tradeRecordsVec[maxElementIdx].longLosses
-							<< endl;
-			outFile << "Longs: " << tradeRecordsVec[maxElementIdx].longs << endl;
-			outFile << "Long wins: " << tradeRecordsVec[maxElementIdx].longWins
-							<< endl;
-			outFile << "Long losses: " << tradeRecordsVec[maxElementIdx].longLosses
-							<< endl;
-			outFile << "Shorts: " << tradeRecordsVec[maxElementIdx].shorts << endl;
-			outFile << "Short wins: " << tradeRecordsVec[maxElementIdx].shortWins
-							<< endl;
-			outFile << "Short losses: " << tradeRecordsVec[maxElementIdx].shortLosses
-							<< endl;
+			outputMetrics(outFile, maxElementIdx, comboVect, tradeRecordsVec,
+										allPerfMetrics, listTrades);
 			outFile << endl;
 
 			maxElementIdx =
-					std::max_element(tradeRecordsVec.begin(), tradeRecordsVec.end(),
-													 [](tradeRecord t1, tradeRecord t2) {
-														 return t1.shorts + t1.longs < t2.shorts + t2.longs;
-													 }) -
+					max_element(tradeRecordsVec.begin(), tradeRecordsVec.end(),
+											[](tradeRecord t1, tradeRecord t2) {
+												return t1.shorts + t1.longs < t2.shorts + t2.longs;
+											}) -
 					tradeRecordsVec.begin();
 			outFile << "Most trades:" << endl;
-			outFile << "Annualized return: "
-							<< to_string(capitalToAnnualizedReturn(
-										 tradeRecordsVec[maxElementIdx].capital, firstTimestamp,
-										 lastTimestamp))
-							<< endl;
-			outFile << "Stop loss: "
-							<< format("{:.2f}", (double)comboVect[maxElementIdx].stopLoss)
-							<< endl;
-			outFile << "Target: "
-							<< format("{:.2f}", (double)comboVect[maxElementIdx].target)
-							<< endl;
-			outFile << "Window: "
-							<< comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS
-							<< " minutes" << endl;
-			outFile << "Buy volume threshold: "
-							<< comboVect[maxElementIdx].buyVolPercentile << endl;
-			outFile << "Sell volume threshold: "
-							<< comboVect[maxElementIdx].sellVolPercentile << endl;
-			outFile << "Total trades: "
-							<< tradeRecordsVec[maxElementIdx].shorts +
-										 tradeRecordsVec[maxElementIdx].longs
-							<< endl;
-			outFile << "Wins: "
-							<< tradeRecordsVec[maxElementIdx].shortWins +
-										 tradeRecordsVec[maxElementIdx].longWins
-							<< endl;
-			outFile << "Losses: "
-							<< tradeRecordsVec[maxElementIdx].shortLosses +
-										 tradeRecordsVec[maxElementIdx].longLosses
-							<< endl;
-			outFile << "Longs: " << tradeRecordsVec[maxElementIdx].longs << endl;
-			outFile << "Long wins: " << tradeRecordsVec[maxElementIdx].longWins
-							<< endl;
-			outFile << "Long losses: " << tradeRecordsVec[maxElementIdx].longLosses
-							<< endl;
-			outFile << "Shorts: " << tradeRecordsVec[maxElementIdx].shorts << endl;
-			outFile << "Short wins: " << tradeRecordsVec[maxElementIdx].shortWins
-							<< endl;
-			outFile << "Short losses: " << tradeRecordsVec[maxElementIdx].shortLosses
-							<< endl;
+			outputMetrics(outFile, maxElementIdx, comboVect, tradeRecordsVec,
+										allPerfMetrics, listTrades);
+			outFile << endl;
+
+			if (listTrades) {
+				maxElementIdx =
+						max_element(allPerfMetrics.begin(), allPerfMetrics.end(),
+												[](perfMetrics p1, perfMetrics p2) {
+													return p1.sharpe < p2.sharpe;
+												}) -
+						allPerfMetrics.begin();
+				outFile << "Best sharpe ratio:" << endl;
+				outputMetrics(outFile, maxElementIdx, comboVect, tradeRecordsVec,
+											allPerfMetrics, listTrades);
+				outFile << endl;
+
+				maxElementIdx =
+						max_element(allPerfMetrics.begin(), allPerfMetrics.end(),
+												[](perfMetrics p1, perfMetrics p2) {
+													return p1.avgDrawdown < p2.avgDrawdown;
+												}) -
+						allPerfMetrics.begin();
+				outFile << "Smallest average drawdown:" << endl;
+				outputMetrics(outFile, maxElementIdx, comboVect, tradeRecordsVec,
+											allPerfMetrics, listTrades);
+				outFile << endl;
+
+				maxElementIdx =
+						max_element(allPerfMetrics.begin(), allPerfMetrics.end(),
+												[](perfMetrics p1, perfMetrics p2) {
+													return p1.maxDrawdown < p2.maxDrawdown;
+												}) -
+						allPerfMetrics.begin();
+				outFile << "Smallest max drawdown:" << endl;
+				outputMetrics(outFile, maxElementIdx, comboVect, tradeRecordsVec,
+											allPerfMetrics, listTrades);
+				outFile << endl;
+
+				maxElementIdx =
+						max_element(allPerfMetrics.begin(), allPerfMetrics.end(),
+												[](perfMetrics p1, perfMetrics p2) {
+													return p1.avgDrawdownLength < p2.avgDrawdownLength;
+												}) -
+						allPerfMetrics.begin();
+				outFile << "Shortest average drawdown length:" << endl;
+				outputMetrics(outFile, maxElementIdx, comboVect, tradeRecordsVec,
+											allPerfMetrics, listTrades);
+				outFile << endl;
+
+				maxElementIdx =
+						max_element(allPerfMetrics.begin(), allPerfMetrics.end(),
+												[](perfMetrics p1, perfMetrics p2) {
+													return p1.avgLossStreak < p2.avgLossStreak;
+												}) -
+						allPerfMetrics.begin();
+				outFile << "Shortest average loss streak:" << endl;
+				outputMetrics(outFile, maxElementIdx, comboVect, tradeRecordsVec,
+											allPerfMetrics, listTrades);
+				outFile << endl;
+
+				maxElementIdx =
+						max_element(allPerfMetrics.begin(), allPerfMetrics.end(),
+												[](perfMetrics p1, perfMetrics p2) {
+													return p1.avgTradeDuration < p2.avgTradeDuration;
+												}) -
+						allPerfMetrics.begin();
+				outFile << "Shortest average trade duration:" << endl;
+				outputMetrics(outFile, maxElementIdx, comboVect, tradeRecordsVec,
+											allPerfMetrics, listTrades);
+				outFile << endl;
+
+				maxElementIdx =
+						min_element(allPerfMetrics.begin(), allPerfMetrics.end(),
+												[](perfMetrics p1, perfMetrics p2) {
+													return p1.avgTradeDuration < p2.avgTradeDuration;
+												}) -
+						allPerfMetrics.begin();
+				outFile << "Longest average trade duration:" << endl;
+				outputMetrics(outFile, maxElementIdx, comboVect, tradeRecordsVec,
+											allPerfMetrics, listTrades);
+			}
 			outFile.close();
 
 			auto outputTime = high_resolution_clock::now();
@@ -1390,142 +1269,116 @@ int main(int argc, char *argv[]) {
 	}
 
 	int maxElementIdx =
-			std::max_element(tradeRecordsVec.begin(), tradeRecordsVec.end(),
-											 [](tradeRecord t1, tradeRecord t2) {
-												 return t1.capital < t2.capital;
-											 }) -
+			max_element(tradeRecordsVec.begin(), tradeRecordsVec.end(),
+									[](tradeRecord t1, tradeRecord t2) {
+										return t1.capital < t2.capital;
+									}) -
 			tradeRecordsVec.begin();
-	cout << fixed;
 	cout << "Max return:" << endl;
-	cout << "Annualized return: "
-			 << to_string(
-							capitalToAnnualizedReturn(tradeRecordsVec[maxElementIdx].capital,
-																				firstTimestamp, lastTimestamp))
-			 << endl;
-	cout << "Stop loss: "
-			 << format("{:.2f}", (double)comboVect[maxElementIdx].stopLoss) << endl;
-	cout << "Target: "
-			 << format("{:.2f}", (double)comboVect[maxElementIdx].target) << endl;
-	cout << "Window: "
-			 << comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS
-			 << " minutes" << endl;
-	cout << "Buy volume threshold: " << comboVect[maxElementIdx].buyVolPercentile
-			 << endl;
-	cout << "Sell volume threshold: "
-			 << comboVect[maxElementIdx].sellVolPercentile << endl;
-	cout << "Total trades: "
-			 << tradeRecordsVec[maxElementIdx].shorts +
-							tradeRecordsVec[maxElementIdx].longs
-			 << endl;
-	cout << "Wins: "
-			 << tradeRecordsVec[maxElementIdx].shortWins +
-							tradeRecordsVec[maxElementIdx].longWins
-			 << endl;
-	cout << "Losses: "
-			 << tradeRecordsVec[maxElementIdx].shortLosses +
-							tradeRecordsVec[maxElementIdx].longLosses
-			 << endl;
-	cout << "Longs: " << tradeRecordsVec[maxElementIdx].longs << endl;
-	cout << "Long wins: " << tradeRecordsVec[maxElementIdx].longWins << endl;
-	cout << "Long losses: " << tradeRecordsVec[maxElementIdx].longLosses << endl;
-	cout << "Shorts: " << tradeRecordsVec[maxElementIdx].shorts << endl;
-	cout << "Short wins: " << tradeRecordsVec[maxElementIdx].shortWins << endl;
-	cout << "Short losses: " << tradeRecordsVec[maxElementIdx].shortLosses
-			 << endl;
+	outputMetrics(cout, maxElementIdx, comboVect, tradeRecordsVec, allPerfMetrics,
+								listTrades);
 	cout << endl;
 
-	maxElementIdx =
-			std::max_element(tradeRecordsVec.begin(), tradeRecordsVec.end(),
-											 [](tradeRecord t1, tradeRecord t2) {
-												 return (double)(t1.shortWins + t1.longWins) /
-																		(t1.shorts + t1.longs) <
-																(double)(t2.shortWins + t2.longWins) /
-																		(t2.shorts + t2.longs);
-											 }) -
-			tradeRecordsVec.begin();
+	maxElementIdx = max_element(tradeRecordsVec.begin(), tradeRecordsVec.end(),
+															[](tradeRecord t1, tradeRecord t2) {
+																return (double)(t1.shortWins + t1.longWins) /
+																					 (t1.shorts + t1.longs) <
+																			 (double)(t2.shortWins + t2.longWins) /
+																					 (t2.shorts + t2.longs);
+															}) -
+									tradeRecordsVec.begin();
 	cout << "Best win rate:" << endl;
-	cout << "Annualized return: "
-			 << to_string(
-							capitalToAnnualizedReturn(tradeRecordsVec[maxElementIdx].capital,
-																				firstTimestamp, lastTimestamp))
-			 << endl;
-	cout << "Stop loss: "
-			 << format("{:.2f}", (double)comboVect[maxElementIdx].stopLoss) << endl;
-	cout << "Target: "
-			 << format("{:.2f}", (double)comboVect[maxElementIdx].target) << endl;
-	cout << "Window: "
-			 << comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS
-			 << " minutes" << endl;
-	cout << "Buy volume threshold: " << comboVect[maxElementIdx].buyVolPercentile
-			 << endl;
-	cout << "Sell volume threshold: "
-			 << comboVect[maxElementIdx].sellVolPercentile << endl;
-	cout << "Total trades: "
-			 << tradeRecordsVec[maxElementIdx].shorts +
-							tradeRecordsVec[maxElementIdx].longs
-			 << endl;
-	cout << "Wins: "
-			 << tradeRecordsVec[maxElementIdx].shortWins +
-							tradeRecordsVec[maxElementIdx].longWins
-			 << endl;
-	cout << "Losses: "
-			 << tradeRecordsVec[maxElementIdx].shortLosses +
-							tradeRecordsVec[maxElementIdx].longLosses
-			 << endl;
-	cout << "Longs: " << tradeRecordsVec[maxElementIdx].longs << endl;
-	cout << "Long wins: " << tradeRecordsVec[maxElementIdx].longWins << endl;
-	cout << "Long losses: " << tradeRecordsVec[maxElementIdx].longLosses << endl;
-	cout << "Shorts: " << tradeRecordsVec[maxElementIdx].shorts << endl;
-	cout << "Short wins: " << tradeRecordsVec[maxElementIdx].shortWins << endl;
-	cout << "Short losses: " << tradeRecordsVec[maxElementIdx].shortLosses
-			 << endl;
+	outputMetrics(cout, maxElementIdx, comboVect, tradeRecordsVec, allPerfMetrics,
+								listTrades);
 	cout << endl;
 
 	maxElementIdx =
-			std::max_element(tradeRecordsVec.begin(), tradeRecordsVec.end(),
-											 [](tradeRecord t1, tradeRecord t2) {
-												 return t1.shorts + t1.longs < t2.shorts + t2.longs;
-											 }) -
+			max_element(tradeRecordsVec.begin(), tradeRecordsVec.end(),
+									[](tradeRecord t1, tradeRecord t2) {
+										return t1.shorts + t1.longs < t2.shorts + t2.longs;
+									}) -
 			tradeRecordsVec.begin();
 	cout << "Most trades:" << endl;
-	cout << "Annualized return: "
-			 << to_string(
-							capitalToAnnualizedReturn(tradeRecordsVec[maxElementIdx].capital,
-																				firstTimestamp, lastTimestamp))
-			 << endl;
-	cout << "Stop loss: "
-			 << format("{:.2f}", (double)comboVect[maxElementIdx].stopLoss) << endl;
-	cout << "Target: "
-			 << format("{:.2f}", (double)comboVect[maxElementIdx].target) << endl;
-	cout << "Window: "
-			 << comboVect[maxElementIdx].window / ONE_MINUTE_MICROSECONDS
-			 << " minutes" << endl;
-	cout << "Buy volume threshold: " << comboVect[maxElementIdx].buyVolPercentile
-			 << endl;
-	cout << "Sell volume threshold: "
-			 << comboVect[maxElementIdx].sellVolPercentile << endl;
-	cout << "Total trades: "
-			 << tradeRecordsVec[maxElementIdx].shorts +
-							tradeRecordsVec[maxElementIdx].longs
-			 << endl;
-	cout << "Wins: "
-			 << tradeRecordsVec[maxElementIdx].shortWins +
-							tradeRecordsVec[maxElementIdx].longWins
-			 << endl;
-	cout << "Losses: "
-			 << tradeRecordsVec[maxElementIdx].shortLosses +
-							tradeRecordsVec[maxElementIdx].longLosses
-			 << endl;
-	cout << "Longs: " << tradeRecordsVec[maxElementIdx].longs << endl;
-	cout << "Long wins: " << tradeRecordsVec[maxElementIdx].longWins << endl;
-	cout << "Long losses: " << tradeRecordsVec[maxElementIdx].longLosses << endl;
-	cout << "Shorts: " << tradeRecordsVec[maxElementIdx].shorts << endl;
-	cout << "Short wins: " << tradeRecordsVec[maxElementIdx].shortWins << endl;
-	cout << "Short losses: " << tradeRecordsVec[maxElementIdx].shortLosses
-			 << endl;
+	outputMetrics(cout, maxElementIdx, comboVect, tradeRecordsVec, allPerfMetrics,
+								listTrades);
 	cout << endl;
 
-	if (!listTrades) cout << "Max trades per interval: " << maxTradesPerInterval << endl;
+	if (!listTrades)
+		cout << "Max trades per interval: " << maxTradesPerInterval << endl;
+	else {
+		maxElementIdx = max_element(allPerfMetrics.begin(), allPerfMetrics.end(),
+																[](perfMetrics p1, perfMetrics p2) {
+																	return p1.sharpe < p2.sharpe;
+																}) -
+										allPerfMetrics.begin();
+		cout << "Best sharpe ratio:" << endl;
+		outputMetrics(cout, maxElementIdx, comboVect, tradeRecordsVec,
+									allPerfMetrics, listTrades);
+		cout << endl;
+
+		maxElementIdx = max_element(allPerfMetrics.begin(), allPerfMetrics.end(),
+																[](perfMetrics p1, perfMetrics p2) {
+																	return p1.avgDrawdown < p2.avgDrawdown;
+																}) -
+										allPerfMetrics.begin();
+		cout << "Smallest average drawdown:" << endl;
+		outputMetrics(cout, maxElementIdx, comboVect, tradeRecordsVec,
+									allPerfMetrics, listTrades);
+		cout << endl;
+
+		maxElementIdx = max_element(allPerfMetrics.begin(), allPerfMetrics.end(),
+																[](perfMetrics p1, perfMetrics p2) {
+																	return p1.maxDrawdown < p2.maxDrawdown;
+																}) -
+										allPerfMetrics.begin();
+		cout << "Smallest max drawdown:" << endl;
+		outputMetrics(cout, maxElementIdx, comboVect, tradeRecordsVec,
+									allPerfMetrics, listTrades);
+		cout << endl;
+
+		maxElementIdx =
+				max_element(allPerfMetrics.begin(), allPerfMetrics.end(),
+										[](perfMetrics p1, perfMetrics p2) {
+											return p1.avgDrawdownLength < p2.avgDrawdownLength;
+										}) -
+				allPerfMetrics.begin();
+		cout << "Shortest average drawdown length:" << endl;
+		outputMetrics(cout, maxElementIdx, comboVect, tradeRecordsVec,
+									allPerfMetrics, listTrades);
+		cout << endl;
+
+		maxElementIdx = max_element(allPerfMetrics.begin(), allPerfMetrics.end(),
+																[](perfMetrics p1, perfMetrics p2) {
+																	return p1.avgLossStreak < p2.avgLossStreak;
+																}) -
+										allPerfMetrics.begin();
+		cout << "Shortest average loss streak:" << endl;
+		outputMetrics(cout, maxElementIdx, comboVect, tradeRecordsVec,
+									allPerfMetrics, listTrades);
+		cout << endl;
+
+		maxElementIdx =
+				max_element(allPerfMetrics.begin(), allPerfMetrics.end(),
+										[](perfMetrics p1, perfMetrics p2) {
+											return p1.avgTradeDuration < p2.avgTradeDuration;
+										}) -
+				allPerfMetrics.begin();
+		cout << "Shortest average trade duration:" << endl;
+		outputMetrics(cout, maxElementIdx, comboVect, tradeRecordsVec,
+									allPerfMetrics, listTrades);
+		cout << endl;
+
+		maxElementIdx =
+				min_element(allPerfMetrics.begin(), allPerfMetrics.end(),
+										[](perfMetrics p1, perfMetrics p2) {
+											return p1.avgTradeDuration < p2.avgTradeDuration;
+										}) -
+				allPerfMetrics.begin();
+		cout << "Longest average trade duration:" << endl;
+		outputMetrics(cout, maxElementIdx, comboVect, tradeRecordsVec,
+									allPerfMetrics, listTrades);
+		cout << endl;
+	}
 
 	auto endTime = high_resolution_clock::now();
 	duration = duration_cast<microseconds>(endTime - startTime);
