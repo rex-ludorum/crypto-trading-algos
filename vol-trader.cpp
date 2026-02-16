@@ -23,6 +23,7 @@ using std::generate;
 using std::get;
 using std::get_time;
 using std::getline;
+using std::gmtime;
 using std::ifstream;
 using std::inner_product;
 using std::istream_iterator;
@@ -37,11 +38,14 @@ using std::nullopt;
 using std::ofstream;
 using std::optional;
 using std::ostream;
+using std::ostringstream;
+using std::put_time;
 using std::setprecision;
 using std::sqrt;
 using std::stod;
 using std::stoi;
 using std::string;
+using std::time_t;
 using std::tm;
 using std::to_string;
 using std::transform;
@@ -64,12 +68,13 @@ using std::endl;
 
 #define NUM_WINDOWS 4
 
-#define MAX_TOTAL_TRADES 20618
+#define MAX_TOTAL_TRADES 15489
 
-#define INCREMENT 1000000
+#define INCREMENT 250000
 #define TRADE_CHUNK 50000000
 
-#define PERCENTILE_LIMIT 30
+#define PERCENTILE_CEILING 30
+#define PERCENTILE_FLOOR 4
 
 #define MARCH_1_1972_IN_SECONDS 68256000
 #define DAYS_IN_LEAP_YEAR_CYCLE 1461
@@ -324,6 +329,16 @@ string joinStrings(tuple<bool, double, string, int> t) {
 	return s;
 }
 
+string convertTsToDate(long long ts) {
+	system_clock::time_point tp = system_clock::time_point{microseconds(ts)};
+	int micros = ts % 1000000;
+	time_t time = system_clock::to_time_t(tp);
+	ostringstream oss;
+	oss << put_time(gmtime(&time), "%F %T");
+
+	return oss.str() + "." + format("{:06}", micros);
+}
+
 double capitalToAnnualizedReturn(double capital, long long t1, long long t2) {
 	return (pow(capital, ONE_YEAR_MICROSECONDS / (double)(t2 - t1)) - 1) * 100;
 }
@@ -402,6 +417,9 @@ int processTrades(cl::CommandQueue &queue, cl::Kernel &kernel,
 			return -1;
 		}
 
+		// cout << *max_element(numTradesInInterval.begin(),
+		// numTradesInInterval.end())
+		// 		 << endl;
 		maxTradesPerInterval =
 				max(maxTradesPerInterval, *max_element(numTradesInInterval.begin(),
 																							 numTradesInInterval.end()));
@@ -636,7 +654,9 @@ void analyzePerf(vector<perfMetrics> &allPerfMetrics,
 
 		p.avgDrawdown =
 				accumulate(drawdowns.begin(), drawdowns.end(), 0.0) / drawdowns.size();
+		p.avgDrawdown = (p.avgDrawdown - 1) * 100;
 		p.maxDrawdown = *min_element(drawdowns.begin(), drawdowns.end());
+		p.maxDrawdown = (p.maxDrawdown - 1) * 100;
 
 		p.avgDrawdownLength =
 				(double)accumulate(drawdownLengths.begin(), drawdownLengths.end(), 0) /
@@ -776,8 +796,10 @@ int main(int argc, char *argv[]) {
 			for (string s : splits) {
 				rowPercentiles.emplace_back(stod(s));
 			}
-			rowPercentiles.erase(rowPercentiles.begin() + PERCENTILE_LIMIT,
+			rowPercentiles.erase(rowPercentiles.begin() + PERCENTILE_CEILING,
 													 rowPercentiles.end());
+			rowPercentiles.erase(rowPercentiles.begin(),
+													 rowPercentiles.begin() + PERCENTILE_FLOOR);
 			buyVolPercentiles.emplace_back(rowPercentiles);
 		}
 		myFile.close();
@@ -795,8 +817,10 @@ int main(int argc, char *argv[]) {
 			for (string s : splits) {
 				rowPercentiles.emplace_back(stod(s));
 			}
-			rowPercentiles.erase(rowPercentiles.begin() + PERCENTILE_LIMIT,
+			rowPercentiles.erase(rowPercentiles.begin() + PERCENTILE_CEILING,
 													 rowPercentiles.end());
+			rowPercentiles.erase(rowPercentiles.begin(),
+													 rowPercentiles.begin() + PERCENTILE_FLOOR);
 			sellVolPercentiles.emplace_back(rowPercentiles);
 		}
 		myFile.close();
@@ -912,6 +936,7 @@ int main(int argc, char *argv[]) {
 	vector<cl_int> numTradesInInterval;
 	cl::Buffer numTradesInIntervalBuf;
 
+	// cout << comboVect.size() * MAX_TOTAL_TRADES * sizeof(entryAndExit) << endl;
 	if (listTrades) {
 		entriesAndExits = vector<entryAndExit>(comboVect.size() * MAX_TOTAL_TRADES,
 																					 entryAndExit{});
@@ -1122,30 +1147,6 @@ int main(int argc, char *argv[]) {
 		else
 			outFile.open("resultsVolETH");
 		if (outFile.is_open()) {
-			for (size_t i = 0; i < comboVect.size(); i++) {
-				outputMetrics(outFile, i, comboVect, tradeRecordsVec, allPerfMetrics,
-											listTrades);
-				if (listTrades) {
-					for (size_t j = 0; j < allTrades[i].size(); j++) {
-						detailedTrade e = allTrades[i][j];
-						if (e.isLong) {
-							outFile << "Long ";
-						} else {
-							outFile << "Short ";
-						}
-						outFile << to_string(e.entryTimestamp) << endl;
-						outFile << "Buy volume: " << to_string(e.e.buyVol) << endl;
-						outFile << "Sell volume: " << to_string(e.e.sellVol) << endl;
-						if (e.profitMargin >= 1.0) {
-							outFile << "Profit: " << to_string(e.profitMargin);
-						} else {
-							outFile << "Loss: " << to_string(e.profitMargin);
-						}
-						outFile << " " << to_string(e.exitTimestamp) << endl;
-					}
-				}
-				outFile << endl;
-			}
 			int maxElementIdx =
 					max_element(tradeRecordsVec.begin(), tradeRecordsVec.end(),
 											[](tradeRecord t1, tradeRecord t2) {
@@ -1217,7 +1218,7 @@ int main(int argc, char *argv[]) {
 				outFile << endl;
 
 				maxElementIdx =
-						max_element(allPerfMetrics.begin(), allPerfMetrics.end(),
+						min_element(allPerfMetrics.begin(), allPerfMetrics.end(),
 												[](perfMetrics p1, perfMetrics p2) {
 													return p1.avgDrawdownLength < p2.avgDrawdownLength;
 												}) -
@@ -1228,7 +1229,7 @@ int main(int argc, char *argv[]) {
 				outFile << endl;
 
 				maxElementIdx =
-						max_element(allPerfMetrics.begin(), allPerfMetrics.end(),
+						min_element(allPerfMetrics.begin(), allPerfMetrics.end(),
 												[](perfMetrics p1, perfMetrics p2) {
 													return p1.avgLossStreak < p2.avgLossStreak;
 												}) -
@@ -1239,7 +1240,7 @@ int main(int argc, char *argv[]) {
 				outFile << endl;
 
 				maxElementIdx =
-						max_element(allPerfMetrics.begin(), allPerfMetrics.end(),
+						min_element(allPerfMetrics.begin(), allPerfMetrics.end(),
 												[](perfMetrics p1, perfMetrics p2) {
 													return p1.avgTradeDuration < p2.avgTradeDuration;
 												}) -
@@ -1250,7 +1251,7 @@ int main(int argc, char *argv[]) {
 				outFile << endl;
 
 				maxElementIdx =
-						min_element(allPerfMetrics.begin(), allPerfMetrics.end(),
+						max_element(allPerfMetrics.begin(), allPerfMetrics.end(),
 												[](perfMetrics p1, perfMetrics p2) {
 													return p1.avgTradeDuration < p2.avgTradeDuration;
 												}) -
@@ -1258,6 +1259,34 @@ int main(int argc, char *argv[]) {
 				outFile << "Longest average trade duration:" << endl;
 				outputMetrics(outFile, maxElementIdx, comboVect, tradeRecordsVec,
 											allPerfMetrics, listTrades);
+				outFile << endl;
+			}
+
+			for (size_t i = 0; i < comboVect.size(); i++) {
+				outputMetrics(outFile, i, comboVect, tradeRecordsVec, allPerfMetrics,
+											listTrades);
+				if (listTrades) {
+					for (size_t j = 0; j < allTrades[i].size(); j++) {
+						detailedTrade e = allTrades[i][j];
+						if (e.isLong) {
+							outFile << "Long ";
+						} else {
+							outFile << "Short ";
+						}
+						outFile << e.entryTimestamp << endl;
+						outFile << convertTsToDate(e.entryTimestamp) << endl;
+						outFile << "Buy volume: " << e.e.buyVol << endl;
+						outFile << "Sell volume: " << e.e.sellVol << endl;
+						if (e.profitMargin >= 1.0) {
+							outFile << "Profit: " << e.profitMargin;
+						} else {
+							outFile << "Loss: " << e.profitMargin;
+						}
+						outFile << " " << e.exitTimestamp << endl;
+						outFile << convertTsToDate(e.exitTimestamp) << endl;
+					}
+				}
+				outFile << endl;
 			}
 			outFile.close();
 
@@ -1337,7 +1366,7 @@ int main(int argc, char *argv[]) {
 		cout << endl;
 
 		maxElementIdx =
-				max_element(allPerfMetrics.begin(), allPerfMetrics.end(),
+				min_element(allPerfMetrics.begin(), allPerfMetrics.end(),
 										[](perfMetrics p1, perfMetrics p2) {
 											return p1.avgDrawdownLength < p2.avgDrawdownLength;
 										}) -
@@ -1347,7 +1376,7 @@ int main(int argc, char *argv[]) {
 									allPerfMetrics, listTrades);
 		cout << endl;
 
-		maxElementIdx = max_element(allPerfMetrics.begin(), allPerfMetrics.end(),
+		maxElementIdx = min_element(allPerfMetrics.begin(), allPerfMetrics.end(),
 																[](perfMetrics p1, perfMetrics p2) {
 																	return p1.avgLossStreak < p2.avgLossStreak;
 																}) -
@@ -1358,7 +1387,7 @@ int main(int argc, char *argv[]) {
 		cout << endl;
 
 		maxElementIdx =
-				max_element(allPerfMetrics.begin(), allPerfMetrics.end(),
+				min_element(allPerfMetrics.begin(), allPerfMetrics.end(),
 										[](perfMetrics p1, perfMetrics p2) {
 											return p1.avgTradeDuration < p2.avgTradeDuration;
 										}) -
@@ -1369,7 +1398,7 @@ int main(int argc, char *argv[]) {
 		cout << endl;
 
 		maxElementIdx =
-				min_element(allPerfMetrics.begin(), allPerfMetrics.end(),
+				max_element(allPerfMetrics.begin(), allPerfMetrics.end(),
 										[](perfMetrics p1, perfMetrics p2) {
 											return p1.avgTradeDuration < p2.avgTradeDuration;
 										}) -
