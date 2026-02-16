@@ -18,6 +18,8 @@
 using std::accumulate;
 using std::array;
 using std::boolalpha;
+using std::defaultfloat;
+using std::fixed;
 using std::format;
 using std::generate;
 using std::get;
@@ -577,7 +579,6 @@ void processTradesWithListing(cl::CommandQueue &queue, cl::Kernel &kernel,
 
 		tw.twStart = currSize - minTradeIdx;
 		currIdx += minTradeIdx;
-		// tradeOffset += minTradeIdx;
 	}
 
 	tradesWithoutDates.erase(tradesWithoutDates.begin(),
@@ -682,6 +683,7 @@ void analyzePerf(vector<perfMetrics> &allPerfMetrics,
 void outputMetrics(ostream &os, size_t idx, vector<combo> &comboVect,
 									 vector<tradeRecord> &tradeRecordsVec,
 									 vector<perfMetrics> &allPerfMetrics, bool listTrades) {
+	os << fixed;
 	os << "Annualized return: " << tradeRecordsVec[idx].capital << endl;
 	os << "Target: " << format("{:.2f}", (double)comboVect[idx].target) << endl;
 	os << "Stop loss: " << format("{:.2f}", (double)comboVect[idx].stopLoss)
@@ -719,6 +721,7 @@ void outputMetrics(ostream &os, size_t idx, vector<combo> &comboVect,
 		os << "Max trade duration: " << allPerfMetrics[idx].maxTradeDuration
 			 << endl;
 	}
+	os << defaultfloat;
 }
 
 int main(int argc, char *argv[]) {
