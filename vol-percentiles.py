@@ -14,38 +14,40 @@ def calculateIndicators():
 	first = True
 	for inputFile in inputFiles:
 		with open(inputFile, "r") as file:
+			print("Opening " + inputFile)
 			file.readline()
 			for line in file:
 				data = line.split(",")
-				trades.append(data)
 				vol = float(data[5]) * float(data[4])
+				isBuyerMaker = data[6].strip().lower() == 'true'
 				timestamp = int(data[0])
+				trimmedData = [timestamp, vol, isBuyerMaker]
+				trades.append(trimmedData)
 				if first:
 					for window in timeWindows:
 						window[1] = timestamp
 					first = False
-				isBuyerMaker = data[6].strip().lower() == 'true'
 				tradeIdx += 1
 				for j, window in enumerate(windows):
 					if timestamp - timeWindows[j][1] > window:
 						i = timeWindows[j][0]
 						while i < tradeIdx - 1:
-							newMicroseconds = int(trades[i][0])
+							newMicroseconds = trades[i][0]
 							if timestamp - newMicroseconds > windows[j]:
-								newVol = float(trades[i][5]) * float(trades[i][4])
-								if trades[i][6].strip().lower() == 'true':
+								newVol = trades[i][1]
+								if trades[i][2]:
 									sellVols[j] -= newVol
 								else:
 									buyVols[j] -= newVol
 							else:
 								break
 							i += 1
-						timeWindows[j] = [i, int(trades[i][0])]
+						timeWindows[j] = [i, trades[i][0]]
 					if isBuyerMaker:
 						sellVols[j] += vol
 					else:
 						buyVols[j] += vol
-				if tradeIdx % 100000 == 0:
+				if tradeIdx % 200000 == 0:
 					print("Timestamp: %d" % timestamp)
 					print("15 minute buy volume: %f" % buyVols[0])
 					print("15 minute sell volume: %f" % sellVols[0])

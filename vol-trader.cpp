@@ -395,7 +395,7 @@ void computeIndicators(const vector<tradeWithoutDate> &tradesWithoutDates,
 		}
 #ifdef DEBUG
 		testIdx++;
-		if (testIdx % 100000 == 0) {
+		if (testIdx % 200000 == 0) {
 			cout << fixed;
 			cout << "Timestamp: " << t.timestamp << endl;
 			cout << "15 minute buy volume: " << ind.vols[1] << endl;
