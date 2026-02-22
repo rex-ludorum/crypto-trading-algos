@@ -1,6 +1,7 @@
 #include <CL/opencl.hpp>
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <format>
@@ -72,7 +73,7 @@ using std::endl;
 
 #define MAX_TOTAL_TRADES 15489
 
-#define INCREMENT 250000
+#define INCREMENT 100000
 #define TRADE_CHUNK 50000000
 
 #define PERCENTILE_CEILING 30
@@ -86,6 +87,8 @@ using std::endl;
 
 constexpr array<int, 12> daysInMonths = {31, 30, 31, 30, 31, 31,
 																				 30, 31, 30, 31, 31, 28};
+
+static size_t newStart;
 
 cl::Device getDefaultDevice(); // Return a device found in this OpenCL platform.
 
@@ -243,6 +246,15 @@ struct __attribute__((packed)) tradeWithoutDate {
 	cl_uchar isBuyerMaker;
 };
 
+struct __attribute__((packed)) indicators {
+	array<cl_double, 2 * NUM_WINDOWS> vols;
+};
+
+struct timeWindow {
+	size_t tradeIdx;
+	long long timestamp;
+};
+
 struct __attribute__((packed)) combo {
 	cl_long window;
 	cl_double buyVolPercentile;
@@ -345,12 +357,162 @@ double capitalToAnnualizedReturn(double capital, long long t1, long long t2) {
 	return (pow(capital, ONE_YEAR_MICROSECONDS / (double)(t2 - t1)) - 1) * 100;
 }
 
-int processTrades(cl::CommandQueue &queue, cl::Kernel &kernel,
+void computeIndicators(const vector<tradeWithoutDate> &tradesWithoutDates,
+											 vector<indicators> &inds, vector<timeWindow> &tws,
+											 const vector<long long> &windows) {
+#ifdef DEBUG
+	static size_t testIdx;
+#endif
+	indicators ind{};
+	if (!inds.empty())
+		ind = inds.back();
+	// should be equal to newStart
+	for (size_t i = inds.size(); i < tradesWithoutDates.size(); i++) {
+		tradeWithoutDate t = tradesWithoutDates[i];
+		if (t.isBuyerMaker) {
+			for (size_t j = 0; j < NUM_WINDOWS; j++)
+				ind.vols[2 * j] += t.qty * t.price;
+		} else {
+			for (size_t j = 0; j < NUM_WINDOWS; j++)
+				ind.vols[2 * j + 1] += t.qty * t.price;
+		}
+		for (size_t j = 0; j < NUM_WINDOWS; j++) {
+			if (t.timestamp - tws[j].timestamp > windows[j]) {
+				size_t k;
+				for (k = tws[j].tradeIdx; k < i; k++) {
+					tradeWithoutDate oldT = tradesWithoutDates[k];
+					if (t.timestamp - oldT.timestamp > windows[j]) {
+						if (oldT.isBuyerMaker)
+							ind.vols[2 * j] -= oldT.qty * oldT.price;
+						else
+							ind.vols[2 * j + 1] -= oldT.qty * oldT.price;
+					} else {
+						break;
+					}
+				}
+				tws[j] = {k, tradesWithoutDates[k].timestamp};
+			}
+		}
+#ifdef DEBUG
+		testIdx++;
+		if (testIdx % 100000 == 0) {
+			cout << fixed;
+			cout << "Timestamp: " << t.timestamp << endl;
+			cout << "15 minute buy volume: " << ind.vols[1] << endl;
+			cout << "15 minute sell volume: " << ind.vols[0] << endl;
+			cout << "30 minute buy volume: " << ind.vols[3] << endl;
+			cout << "30 minute sell volume: " << ind.vols[2] << endl;
+			cout << "45 minute buy volume: " << ind.vols[5] << endl;
+			cout << "45 minute sell volume: " << ind.vols[4] << endl;
+			cout << "60 minute buy volume: " << ind.vols[7] << endl;
+			cout << "60 minute sell volume: " << ind.vols[6] << endl;
+			cout << defaultfloat;
+		}
+#endif
+		inds.push_back(ind);
+	}
+}
+
+int processTradesWithIndicators(
+		const cl::CommandQueue &queue, const cl::Kernel &kernel,
+		vector<tradeWithoutDate> &tradesWithoutDates, vector<indicators> &inds,
+		vector<timeWindow> &tws, const vector<combo> &comboVect,
+		const cl::Buffer &inputTrades, const cl::Buffer &indicatorBuffer,
+		const cl::Buffer &inputSize, const cl::Buffer &numTradesInIntervalBuf) {
+	size_t currIdx = newStart;
+	static size_t globalIdx = 0;
+
+	cl_int err;
+
+	vector<cl_int> numTradesInInterval(comboVect.size(), 0);
+
+	int maxTradesPerInterval = 0;
+
+	while (true) {
+		size_t currSize =
+				min((size_t)INCREMENT, tradesWithoutDates.size() - currIdx);
+
+		err = queue.enqueueWriteBuffer(inputTrades, CL_FALSE, 0,
+																	 currSize * sizeof(tradeWithoutDate),
+																	 &tradesWithoutDates[currIdx]);
+		if (err != CL_SUCCESS) {
+			cout << "Error for enqueueWriteBuffer inputTrades: " << err << endl;
+			return -1;
+		}
+		err =
+				queue.enqueueWriteBuffer(indicatorBuffer, CL_FALSE, 0,
+																 currSize * sizeof(indicators), &inds[currIdx]);
+		if (err != CL_SUCCESS) {
+			cout << "Error for enqueueWriteBuffer indicatorBuffer: " << err << endl;
+			return -1;
+		}
+		err = queue.enqueueWriteBuffer(inputSize, CL_FALSE, 0, sizeof(int),
+																	 &currSize);
+		if (err != CL_SUCCESS) {
+			cout << "Error for enqueueWriteBuffer inputSize: " << err << endl;
+			return -1;
+		}
+		cout << "Running trades " << currIdx << "-" << currIdx + currSize - 1
+				 << " (" << globalIdx << "-" << globalIdx + currSize - 1 << ")" << endl;
+		err = queue.enqueueNDRangeKernel(kernel, cl::NullRange,
+																		 cl::NDRange(comboVect.size()));
+		if (err != CL_SUCCESS) {
+			cout << "Error for volKernel: " << err << endl;
+			return -1;
+		}
+		err = queue.enqueueReadBuffer(numTradesInIntervalBuf, CL_FALSE, 0,
+																	comboVect.size() * sizeof(cl_int),
+																	&numTradesInInterval[0]);
+		if (err != CL_SUCCESS) {
+			cout << "Error for reading numTradesInInterval: " << err << endl;
+			return -1;
+		}
+
+		err = queue.finish();
+		if (err != CL_SUCCESS) {
+			cout << "Error for finish: " << err << endl;
+			return -1;
+		}
+
+		// cout << *max_element(numTradesInInterval.begin(),
+		// numTradesInInterval.end())
+		// 		 << endl;
+		maxTradesPerInterval =
+				max(maxTradesPerInterval, *max_element(numTradesInInterval.begin(),
+																							 numTradesInInterval.end()));
+
+		globalIdx += currSize;
+		currIdx += currSize;
+
+		if (currIdx >= tradesWithoutDates.size()) {
+			break;
+		}
+	}
+
+	int minElementIdx = min_element(tws.begin(), tws.end(),
+																	[](timeWindow t1, timeWindow t2) {
+																		return t1.tradeIdx < t2.tradeIdx;
+																	}) -
+											tws.begin();
+	int minTradeIdx = tws[minElementIdx].tradeIdx;
+	for (auto &tw : tws) {
+		tw.tradeIdx -= minTradeIdx;
+	}
+
+	newStart = currIdx - minTradeIdx;
+	tradesWithoutDates.erase(tradesWithoutDates.begin(),
+													 tradesWithoutDates.begin() + minTradeIdx);
+	inds.erase(inds.begin(), inds.begin() + minTradeIdx);
+	return maxTradesPerInterval;
+}
+
+int processTrades(const cl::CommandQueue &queue, const cl::Kernel &kernel,
 									vector<tradeWithoutDate> &tradesWithoutDates,
-									vector<combo> &comboVect, cl::Buffer &inputTrades,
-									cl::Buffer &inputSize, cl::Buffer &twBetweenRunData,
-									cl::Buffer &positionDatas,
-									cl::Buffer &numTradesInIntervalBuf) {
+									const vector<combo> &comboVect, const cl::Buffer &inputTrades,
+									const cl::Buffer &inputSize,
+									const cl::Buffer &twBetweenRunData,
+									const cl::Buffer &positionDatas,
+									const cl::Buffer &numTradesInIntervalBuf) {
 	size_t currIdx = 0;
 	static size_t globalIdx = 0;
 
@@ -360,17 +522,12 @@ int processTrades(cl::CommandQueue &queue, cl::Kernel &kernel,
 	vector<positionData> positionDatasVec(comboVect.size(), {0, 0.0, 0.0, 0});
 	vector<cl_int> numTradesInInterval(comboVect.size(), 0);
 
-	bool first = true;
-
 	int maxTradesPerInterval = 0;
 
 	while (true) {
 		size_t currSize =
 				min((size_t)INCREMENT, tradesWithoutDates.size() - currIdx);
-		if (first && tw.twStart != 0) {
-			tw.twStart = currSize - tw.twTranslation;
-			first = false;
-		}
+
 		err = queue.enqueueWriteBuffer(inputTrades, CL_FALSE, 0,
 																	 currSize * sizeof(tradeWithoutDate),
 																	 &tradesWithoutDates[currIdx]);
@@ -433,6 +590,7 @@ int processTrades(cl::CommandQueue &queue, cl::Kernel &kernel,
 				positionDatasVec.begin();
 		int minTradeIdx = positionDatasVec[minElementIdx].tradeIdx;
 		tw.twTranslation = minTradeIdx;
+		tw.twStart = currSize - minTradeIdx;
 		globalIdx += minTradeIdx;
 
 		if (currIdx + currSize >= tradesWithoutDates.size()) {
@@ -440,7 +598,6 @@ int processTrades(cl::CommandQueue &queue, cl::Kernel &kernel,
 			break;
 		}
 
-		tw.twStart = currSize - minTradeIdx;
 		currIdx += minTradeIdx;
 	}
 
@@ -449,14 +606,13 @@ int processTrades(cl::CommandQueue &queue, cl::Kernel &kernel,
 	return maxTradesPerInterval;
 }
 
-void processTradesWithListing(cl::CommandQueue &queue, cl::Kernel &kernel,
-															vector<tradeWithoutDate> &tradesWithoutDates,
-															vector<combo> &comboVect, cl::Buffer &inputTrades,
-															cl::Buffer &inputSize,
-															cl::Buffer &twBetweenRunData,
-															cl::Buffer &positionDatas,
-															cl::Buffer &entriesAndExitsBuf,
-															vector<vector<detailedTrade>> &allTrades) {
+void processTradesWithListing(
+		const cl::CommandQueue &queue, const cl::Kernel &kernel,
+		vector<tradeWithoutDate> &tradesWithoutDates,
+		const vector<combo> &comboVect, const cl::Buffer &inputTrades,
+		const cl::Buffer &inputSize, const cl::Buffer &twBetweenRunData,
+		const cl::Buffer &positionDatas, const cl::Buffer &entriesAndExitsBuf,
+		vector<vector<detailedTrade>> &allTrades) {
 	size_t currIdx = 0;
 	static size_t globalIdx = 0;
 
@@ -466,18 +622,13 @@ void processTradesWithListing(cl::CommandQueue &queue, cl::Kernel &kernel,
 	vector<positionData> positionDatasVec(comboVect.size(), {0, 0.0, 0.0, 0});
 	vector<cl_int> numTradesInInterval(comboVect.size(), 0);
 
-	bool first = true;
-
 	vector<entryAndExit> entriesAndExits =
 			vector<entryAndExit>(comboVect.size() * MAX_TOTAL_TRADES, entryAndExit{});
 
 	while (true) {
 		size_t currSize =
 				min((size_t)INCREMENT, tradesWithoutDates.size() - currIdx);
-		if (first && tw.twStart != 0) {
-			tw.twStart = currSize - tw.twTranslation;
-			first = false;
-		}
+
 		err = queue.enqueueWriteBuffer(inputTrades, CL_FALSE, 0,
 																	 currSize * sizeof(tradeWithoutDate),
 																	 &tradesWithoutDates[currIdx]);
@@ -570,6 +721,7 @@ void processTradesWithListing(cl::CommandQueue &queue, cl::Kernel &kernel,
 				positionDatasVec.begin();
 		int minTradeIdx = positionDatasVec[minElementIdx].tradeIdx;
 		tw.twTranslation = minTradeIdx;
+		tw.twStart = currSize - minTradeIdx;
 		globalIdx += minTradeIdx;
 
 		if (currIdx + currSize >= tradesWithoutDates.size()) {
@@ -577,7 +729,6 @@ void processTradesWithListing(cl::CommandQueue &queue, cl::Kernel &kernel,
 			break;
 		}
 
-		tw.twStart = currSize - minTradeIdx;
 		currIdx += minTradeIdx;
 	}
 
@@ -680,9 +831,9 @@ void analyzePerf(vector<perfMetrics> &allPerfMetrics,
 	}
 }
 
-void outputMetrics(ostream &os, size_t idx, vector<combo> &comboVect,
-									 vector<tradeRecord> &tradeRecordsVec,
-									 vector<perfMetrics> &allPerfMetrics, bool listTrades) {
+void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVect,
+									 const vector<tradeRecord> &tradeRecordsVec,
+									 const vector<perfMetrics> &allPerfMetrics, bool listTrades) {
 	os << fixed;
 	os << "Annualized return: " << tradeRecordsVec[idx].capital << endl;
 	os << "Target: " << format("{:.2f}", (double)comboVect[idx].target) << endl;
@@ -882,7 +1033,8 @@ int main(int argc, char *argv[]) {
 	if (listTrades) {
 		volKernel = cl::Kernel(program, "volTraderWithTrades", &err);
 	} else {
-		volKernel = cl::Kernel(program, "volTrader", &err);
+		// volKernel = cl::Kernel(program, "volTrader", &err);
+		volKernel = cl::Kernel(program, "volTraderWithIndicators", &err);
 	}
 
 	cl::Buffer inputTrades(context, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY,
@@ -932,6 +1084,12 @@ int main(int argc, char *argv[]) {
 		cout << "Error for positionDatas: " << err << endl;
 		return 1;
 	}
+	cl::Buffer indicatorBuffer(context, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY,
+														 INCREMENT * sizeof(indicators), NULL, &err);
+	if (err != CL_SUCCESS) {
+		cout << "Error for indicatorBuffer: " << err << endl;
+		return 1;
+	}
 
 	vector<entryAndExit> entriesAndExits;
 	cl::Buffer entriesAndExitsBuf;
@@ -976,6 +1134,28 @@ int main(int argc, char *argv[]) {
 	if (err != CL_SUCCESS) {
 		cout << "Error for volKernel setArg 1: " << err << endl;
 	}
+	err = volKernel.setArg(2, indicatorBuffer);
+	if (err != CL_SUCCESS) {
+		cout << "Error for volKernel setArg 2: " << err << endl;
+	}
+	err = volKernel.setArg(3, inputCombos);
+	if (err != CL_SUCCESS) {
+		cout << "Error for volKernel setArg 3: " << err << endl;
+	}
+	err = volKernel.setArg(4, entries);
+	if (err != CL_SUCCESS) {
+		cout << "Error for volKernel setArg 4: " << err << endl;
+	}
+	err = volKernel.setArg(5, tradeRecords);
+	if (err != CL_SUCCESS) {
+		cout << "Error for volKernel setArg 5: " << err << endl;
+	}
+	err = volKernel.setArg(6, numTradesInIntervalBuf);
+	if (err != CL_SUCCESS) {
+		cout << "Error for volKernel setArg 6: " << err << endl;
+	}
+
+	/*
 	err = volKernel.setArg(2, inputCombos);
 	if (err != CL_SUCCESS) {
 		cout << "Error for volKernel setArg 2: " << err << endl;
@@ -1008,9 +1188,12 @@ int main(int argc, char *argv[]) {
 			cout << "Error for volKernel setArg 7: " << err << endl;
 		}
 	}
+	*/
 
 	vector<trade> trades;
 	vector<tradeWithoutDate> tradesWithoutDates;
+	vector<indicators> indicators;
+	vector<timeWindow> tws(NUM_WINDOWS, {0, 0});
 
 	bool justProcessed = false;
 
@@ -1027,6 +1210,9 @@ int main(int argc, char *argv[]) {
 			 << " seconds" << endl;
 
 	long long firstTimestamp = 0, lastTimestamp = 0;
+#ifdef DEBUG
+	int lastId = 0;
+#endif
 
 	for (int i = optind; i < argc; i++) {
 		myFile.open(argv[i]);
@@ -1066,6 +1252,13 @@ int main(int argc, char *argv[]) {
 				t.timestamp = stoll(splits[0]);
 				if (firstTimestamp == 0)
 					firstTimestamp = t.timestamp;
+#ifdef DEBUG
+				if (lastTimestamp != 0)
+					assert(t.timestamp > lastTimestamp);
+				if (lastId != 0)
+					assert(stoi(splits[3]) > lastId);
+				lastId = stoi(splits[3]);
+#endif
 				lastTimestamp = t.timestamp;
 				// trades.emplace_back(t);
 				tradesWithoutDates.emplace_back(convertTrade(t));
@@ -1074,22 +1267,37 @@ int main(int argc, char *argv[]) {
 					for (auto &pos : positionDatasVec) {
 						pos.timestamp = t.timestamp;
 					}
+					for (auto &tw : tws) {
+						tw.timestamp = t.timestamp;
+					}
 					initializedPositions = true;
 				}
 
 				justProcessed = false;
-				if (tradesWithoutDates.size() == TRADE_CHUNK) {
+				if (tradesWithoutDates.size() - newStart == TRADE_CHUNK) {
+					auto beforeIndicatorTime = high_resolution_clock::now();
+					computeIndicators(tradesWithoutDates, indicators, tws, windows);
+					auto afterIndicatorTime = high_resolution_clock::now();
+					duration = duration_cast<microseconds>(afterIndicatorTime -
+																								 beforeIndicatorTime);
+					cout << "Time taken to compute indicators: "
+							 << (double)duration.count() / 1000000 << " seconds" << endl;
 					if (listTrades)
 						processTradesWithListing(queue, volKernel, tradesWithoutDates,
 																		 comboVect, inputTrades, inputSize,
 																		 twBetweenRunData, positionDatas,
 																		 numTradesInIntervalBuf, allTrades);
 					else
-						maxTradesPerInterval = max(
-								maxTradesPerInterval,
-								processTrades(queue, volKernel, tradesWithoutDates, comboVect,
-															inputTrades, inputSize, twBetweenRunData,
-															positionDatas, numTradesInIntervalBuf));
+						maxTradesPerInterval =
+								max(maxTradesPerInterval,
+										// processTrades(queue, volKernel, tradesWithoutDates,
+										// comboVect, 							inputTrades, inputSize,
+										// twBetweenRunData, 							positionDatas,
+										// numTradesInIntervalBuf));
+										processTradesWithIndicators(
+												queue, volKernel, tradesWithoutDates, indicators, tws,
+												comboVect, inputTrades, indicatorBuffer, inputSize,
+												numTradesInIntervalBuf));
 					justProcessed = true;
 				}
 			}
@@ -1098,6 +1306,13 @@ int main(int argc, char *argv[]) {
 	}
 
 	if (!justProcessed) {
+		auto beforeIndicatorTime = high_resolution_clock::now();
+		computeIndicators(tradesWithoutDates, indicators, tws, windows);
+		auto afterIndicatorTime = high_resolution_clock::now();
+		duration =
+				duration_cast<microseconds>(afterIndicatorTime - beforeIndicatorTime);
+		cout << "Time taken to compute indicators: "
+				 << (double)duration.count() / 1000000 << " seconds" << endl;
 		if (listTrades)
 			processTradesWithListing(queue, volKernel, tradesWithoutDates, comboVect,
 															 inputTrades, inputSize, twBetweenRunData,
@@ -1106,9 +1321,13 @@ int main(int argc, char *argv[]) {
 		else
 			maxTradesPerInterval =
 					max(maxTradesPerInterval,
-							processTrades(queue, volKernel, tradesWithoutDates, comboVect,
-														inputTrades, inputSize, twBetweenRunData,
-														positionDatas, numTradesInIntervalBuf));
+							// processTrades(queue, volKernel, tradesWithoutDates, comboVect,
+							// 							inputTrades, inputSize, twBetweenRunData,
+							// 							positionDatas, numTradesInIntervalBuf));
+							processTradesWithIndicators(queue, volKernel, tradesWithoutDates,
+																					indicators, tws, comboVect,
+																					inputTrades, indicatorBuffer,
+																					inputSize, numTradesInIntervalBuf));
 	}
 
 	err = queue.enqueueReadBuffer(tradeRecords, CL_FALSE, 0,

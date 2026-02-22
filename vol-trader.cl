@@ -1,11 +1,19 @@
 #define MAX_TOTAL_TRADES 20618
 
+#define NUM_WINDOWS 4
+
+#define FIFTEEN_MINUTES_MICROSECONDS 900000000
+
 typedef struct __attribute__ ((packed)) tradeWithoutDate {
 	long timestamp;
 	double price;
 	double qty;
 	uchar isBuyerMaker;
 } tradeWithoutDate;
+
+typedef struct __attribute__ ((packed)) indicators {
+	double vols[2 * NUM_WINDOWS];
+} indicators;
 
 typedef struct __attribute__ ((packed)) combo {
 	long window;
@@ -97,6 +105,81 @@ inline int isDST(long ts) {
 	} else {
 		return daysInCurrentYear > dstStart && daysInCurrentYear < dstEnd;
 	}
+}
+
+__kernel void volTraderWithIndicators(__global int* numTrades, __global tradeWithoutDate* trades, __global indicators* inds, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global int* numTradesInInterval) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	combo c = combos[index];
+	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	// printf("%d\n", numTrades);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+	entry e = entries[index];
+
+	double precomputedTarget = 1 + c.target * 0.01;
+	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
+
+	int tradesInInterval = 0;
+
+	int indicatorIdx = c.window / FIFTEEN_MINUTES_MICROSECONDS - 1;
+
+	for (int i = 0; i < *numTrades; i++) {
+		double vol = trades[i].qty;
+		double price = trades[i].price;
+		double sellVol = inds[i].vols[2 * indicatorIdx];
+		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profitMargin;
+			if (e.isLong) {
+				profitMargin = price / e.price;
+				if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+					capital *= profitMargin;
+					e = (entry) {0.0, false};
+					lw += profitMargin >= 1.0;
+					ll += profitMargin < 1.0;
+					tradesInInterval++;
+				}
+			} else {
+				profitMargin = 2 - price / e.price;
+				if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+					capital *= profitMargin;
+					e = (entry) {0.0, false};
+					sw += profitMargin >= 1.0;
+					sl += profitMargin < 1.0;
+					tradesInInterval++;
+				}
+			}
+		}
+
+		if (e.price == 0.0) {
+			if (buyVol >= c.buyVolPercentile && !inClose && !onWeekend) {
+				e = (entry) {price, true};
+				ls += 1;
+			} else if (sellVol >= c.sellVolPercentile && !inClose && !onWeekend) {
+				e = (entry) {price, false};
+				ss += 1;
+			}
+		}
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+	numTradesInInterval[index] = tradesInInterval;
 }
 
 __kernel void volTrader(__global int* numTrades, __global tradeWithoutDate* trades, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas, __global twMetadata* twBetweenRuns, __global int* numTradesInInterval) {
