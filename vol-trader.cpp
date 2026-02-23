@@ -73,11 +73,11 @@ using std::endl;
 
 #define MAX_TOTAL_TRADES 15489
 
-#define INCREMENT 100000
+#define INCREMENT 50000
 #define TRADE_CHUNK 50000000
 
 #define PERCENTILE_CEILING 30
-#define PERCENTILE_FLOOR 4
+#define PERCENTILE_FLOOR 6
 
 #define MARCH_1_1972_IN_SECONDS 68256000
 #define DAYS_IN_LEAP_YEAR_CYCLE 1461
@@ -695,6 +695,13 @@ void processTradesWithListing(
 				}
 				if (e.exitIndex != 0) {
 					if (e.entryIndex == 0) {
+#ifdef DEBUG
+						assert(e.e.buyVol == 0);
+						assert(e.e.sellVol == 0);
+						assert(!e.isLong);
+						assert(allTrades[i].back().exitTimestamp == 0);
+						assert(allTrades[i].back().profitMargin == 0.0);
+#endif
 						allTrades[i].back().profitMargin = e.profitMargin;
 						allTrades[i].back().exitTimestamp =
 								tradesWithoutDates[e.exitIndex].timestamp;
@@ -705,6 +712,9 @@ void processTradesWithListing(
 						allTrades[i].emplace_back(d);
 					}
 				} else {
+#ifdef DEBUG
+					assert(e.profitMargin == 0.0);
+#endif
 					detailedTrade d = {0, tradesWithoutDates[e.entryIndex].timestamp, 0,
 														 e.e, (bool)e.isLong};
 					allTrades[i].emplace_back(d);
