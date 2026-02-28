@@ -73,7 +73,7 @@ using std::endl;
 
 #define MAX_TOTAL_TRADES 3189
 
-#define INCREMENT 10000
+#define INCREMENT 1000000
 #define TRADE_CHUNK 50000000
 
 #define PERCENTILE_CEILING 30
@@ -317,7 +317,7 @@ struct __attribute__((packed)) lossStreaks {
 
 struct __attribute__((packed)) tradeDurations {
 	cl_int n;
-	cl_int max;
+	cl_long max;
 	cl_double mean;
 	cl_long entryTimestamp;
 };
@@ -2009,6 +2009,7 @@ int main(int argc, char *argv[]) {
 			duration = duration_cast<microseconds>(outputTime - afterKernelTime);
 			cout << "Time taken to write output: "
 					 << (double)duration.count() / 1000000 << " seconds" << endl;
+			cout << endl;
 		}
 	}
 

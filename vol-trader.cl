@@ -595,11 +595,13 @@ __kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWit
 					tradeDurations[index].max = max(tradeDurations[index].max, newTradeDuration);
 					tradeDurations[index].mean += ((double) newTradeDuration - tradeDurations[index].mean) / (double) ++tradeDurations[index].n;
 
-					long nextMonth = getTsOfNextMonth(microseconds);
-					if (nextMonth == monthlyReturns[index].nextMonth) {
+					if (monthlyReturns[index].nextMonth == 0)
+						monthlyReturns[index].nextMonth = getTsOfNextMonth(microseconds);
+
+					if (microseconds < monthlyReturns[index].nextMonth) {
 						monthlyReturns[index].current *= profitMargin;
 					} else {
-						monthlyReturns[index].nextMonth = nextMonth;
+						monthlyReturns[index].nextMonth = getTsOfNextMonth(microseconds);
 						double oldMean = monthlyReturns[index].mean;
 						monthlyReturns[index].mean += (monthlyReturns[index].current - monthlyReturns[index].mean) / (double) ++monthlyReturns[index].n;
 						monthlyReturns[index].m2 += (monthlyReturns[index].current - oldMean) * (monthlyReturns[index].current - monthlyReturns[index].mean);
@@ -607,7 +609,6 @@ __kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWit
 					}
 
 					if (!win) {
-						// remember to set to 1 in cpp initialization
 						drawdowns[index].current *= profitMargin;
 
 						// consider moving start to the trade entry instead of exit
