@@ -68,6 +68,40 @@ typedef struct __attribute__ ((packed)) entryAndExit {
 	bool isLong;
 } entryAndExit;
 
+typedef struct __attribute__((packed)) drawdowns {
+	double max;
+	double mean;
+	double current;
+} drawdowns;
+
+typedef struct __attribute__((packed)) drawdownLengths {
+	long max;
+	double mean;
+	long drawdownStart;
+} drawdownLengths;
+
+typedef struct __attribute__((packed)) lossStreaks {
+	int n;
+	int max;
+	double mean;
+	int current;
+} lossStreaks;
+
+typedef struct __attribute__((packed)) tradeDurations {
+	int n;
+	long max;
+	double mean;
+	long entryTimestamp;
+} tradeDurations;
+
+typedef struct __attribute__((packed)) monthlyReturns {
+	int n;
+	double current;
+	double mean;
+	double m2;
+	long nextMonth;
+} monthlyReturns;
+
 #define MICROSECONDS_IN_HOUR 3600000000
 #define MICROSECONDS_IN_DAY 86400000000
 #define MICROSECONDS_IN_WEEK 604800000000
@@ -77,13 +111,15 @@ typedef struct __attribute__ ((packed)) entryAndExit {
 #define CME_OPEN_SUNDAY 342000000000
 
 #define MARCH_1_1972_IN_SECONDS 68256000
-#define DAYS_IN_LEAR_YEAR_CYCLE 1461
+#define DAYS_IN_LEAP_YEAR_CYCLE 1461
 #define SECONDS_IN_DAY 86400
+
+__constant int daysInMonths[12] = { 31, 30, 31, 30, 31, 31, 30, 31, 30, 31, 31, 28 };
 
 inline int isDST(long ts) {
 	int timestamp = ts / 1000000;
 	int days = (timestamp - MARCH_1_1972_IN_SECONDS) / SECONDS_IN_DAY;
-	int daysInCurrentCycle = days % DAYS_IN_LEAR_YEAR_CYCLE;
+	int daysInCurrentCycle = days % DAYS_IN_LEAP_YEAR_CYCLE;
 	int daysInCurrentYear = daysInCurrentCycle % 365;
 
 	int timeInCurrentDay = timestamp % SECONDS_IN_DAY;
@@ -107,6 +143,37 @@ inline int isDST(long ts) {
 	}
 }
 
+inline long getTsOfNextMonth(long ts) {
+	int timestamp = ts / 1000000;
+	int days = (timestamp - MARCH_1_1972_IN_SECONDS) / SECONDS_IN_DAY;
+	int daysInCurrentCycle = days % DAYS_IN_LEAP_YEAR_CYCLE;
+	int daysInCurrentYear = daysInCurrentCycle % 365;
+	int daysInCurrentYearCopy = daysInCurrentYear;
+	bool isLeapYear = daysInCurrentCycle / 365 >= 3;
+
+	int daysUntilNextMonthFromStartOfCurrentYear = 0;
+	if (daysInCurrentCycle != 1460) {
+		int monthIdx = 0;
+		while (daysInCurrentYear >= 0) {
+			daysUntilNextMonthFromStartOfCurrentYear += daysInMonths[monthIdx];
+			daysInCurrentYear -= daysInMonths[monthIdx++];
+		}
+		if (isLeapYear && monthIdx == 12)
+			daysUntilNextMonthFromStartOfCurrentYear += 1;
+	} else
+		daysUntilNextMonthFromStartOfCurrentYear = 1;
+
+	long long daysUntilNextMonthFromMarchOne =
+			days - daysInCurrentYearCopy + daysUntilNextMonthFromStartOfCurrentYear;
+	return (daysUntilNextMonthFromMarchOne * SECONDS_IN_DAY +
+					MARCH_1_1972_IN_SECONDS) *
+				 1000000;
+}
+
+inline int computeIndicatorIdx(long window) {
+	return window / FIFTEEN_MINUTES_MICROSECONDS - 1;
+}
+
 __kernel void volTraderWithIndicators(__global int* numTrades, __global tradeWithoutDate* trades, __global indicators* inds, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global int* numTradesInInterval) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
@@ -127,7 +194,7 @@ __kernel void volTraderWithIndicators(__global int* numTrades, __global tradeWit
 
 	int tradesInInterval = 0;
 
-	int indicatorIdx = c.window / FIFTEEN_MINUTES_MICROSECONDS - 1;
+	int indicatorIdx = computeIndicatorIdx(c.window);
 
 	for (int i = 0; i < *numTrades; i++) {
 		double vol = trades[i].qty;
@@ -404,7 +471,7 @@ __kernel void volTraderWithTradesAndIndicators(__global int* numTrades, __global
 	double precomputedTarget = 1 + c.target * 0.01;
 	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
 
-	int indicatorIdx = c.window / FIFTEEN_MINUTES_MICROSECONDS - 1;
+	int indicatorIdx = computeIndicatorIdx(c.window);
 
 	int tradesInInterval = 0;
 
@@ -425,6 +492,7 @@ __kernel void volTraderWithTradesAndIndicators(__global int* numTrades, __global
 		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
 
 		if (e.price != 0.0) {
+			// consider consolidating these code paths
 			double profitMargin;
 			if (e.isLong) {
 				profitMargin = price / e.price;
@@ -467,6 +535,167 @@ __kernel void volTraderWithTradesAndIndicators(__global int* numTrades, __global
 				currentTrade.e.buyVol = buyVol;
 				currentTrade.e.sellVol = sellVol;
 				entriesAndExits[index * MAX_TOTAL_TRADES + tradesInInterval] = currentTrade;
+			}
+		}
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+}
+
+__kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global indicators* inds, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	combo c = combos[index];
+	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	// printf("%d\n", numTrades);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+	entry e = entries[index];
+
+	double precomputedTarget = 1 + c.target * 0.01;
+	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
+
+	int tradesInInterval = 0;
+
+	int indicatorIdx = computeIndicatorIdx(c.window);
+
+	for (int i = 0; i < *numTrades; i++) {
+		double vol = trades[i].qty;
+		double price = trades[i].price;
+		double sellVol = inds[i].vols[2 * indicatorIdx];
+		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profitMargin;
+			if (e.isLong) {
+				profitMargin = price / e.price;
+				if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+					capital *= profitMargin;
+					e = (entry) {0.0, false};
+					bool win = profitMargin >= 1.0;
+					lw += win;
+					ll += !win;
+					tradesInInterval++;
+
+					long newTradeDuration = microseconds - tradeDurations[index].entryTimestamp;
+					tradeDurations[index].max = max(tradeDurations[index].max, newTradeDuration);
+					tradeDurations[index].mean += ((double) newTradeDuration - tradeDurations[index].mean) / (double) ++tradeDurations[index].n;
+
+					long nextMonth = getTsOfNextMonth(microseconds);
+					if (nextMonth == monthlyReturns[index].nextMonth) {
+						monthlyReturns[index].current *= profitMargin;
+					} else {
+						monthlyReturns[index].nextMonth = nextMonth;
+						double oldMean = monthlyReturns[index].mean;
+						monthlyReturns[index].mean += (monthlyReturns[index].current - monthlyReturns[index].mean) / (double) ++monthlyReturns[index].n;
+						monthlyReturns[index].m2 += (monthlyReturns[index].current - oldMean) * (monthlyReturns[index].current - monthlyReturns[index].mean);
+						monthlyReturns[index].current = profitMargin;
+					}
+
+					if (!win) {
+						// remember to set to 1 in cpp initialization
+						drawdowns[index].current *= profitMargin;
+
+						// consider moving start to the trade entry instead of exit
+						if (drawdownLengths[index].drawdownStart == 0)
+							drawdownLengths[index].drawdownStart = microseconds;
+
+						lossStreaks[index].current++;
+					} else {
+						if (lossStreaks[index].current != 0) {
+							drawdowns[index].max = min(drawdowns[index].max, drawdowns[index].current);
+							drawdowns[index].mean += (drawdowns[index].current - drawdowns[index].mean) / (double) ++lossStreaks[index].n;
+							drawdowns[index].current = 1;
+
+							long newDrawdownLength = microseconds - drawdownLengths[index].drawdownStart;
+							drawdownLengths[index].max = max(drawdownLengths[index].max, newDrawdownLength);
+							drawdownLengths[index].mean += ((double) newDrawdownLength - drawdownLengths[index].mean) / (double) lossStreaks[index].n;
+							drawdownLengths[index].drawdownStart = 0;
+
+							lossStreaks[index].max = max(lossStreaks[index].max, lossStreaks[index].current);
+							lossStreaks[index].mean += ((double) lossStreaks[index].current - lossStreaks[index].mean) / (double) lossStreaks[index].n;
+							lossStreaks[index].current = 0;
+						}
+					}
+				}
+			} else {
+				profitMargin = 2 - price / e.price;
+				if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+					capital *= profitMargin;
+					e = (entry) {0.0, false};
+					bool win = profitMargin >= 1.0;
+					sw += win;
+					sl += !win;
+					tradesInInterval++;
+
+					long newTradeDuration = microseconds - tradeDurations[index].entryTimestamp;
+					tradeDurations[index].max = max(tradeDurations[index].max, newTradeDuration);
+					tradeDurations[index].mean += ((double) newTradeDuration - tradeDurations[index].mean) / (double) ++tradeDurations[index].n;
+
+					if (monthlyReturns[index].nextMonth == 0)
+						monthlyReturns[index].nextMonth = getTsOfNextMonth(microseconds);
+
+					if (microseconds < monthlyReturns[index].nextMonth) {
+						monthlyReturns[index].current *= profitMargin;
+					} else {
+						monthlyReturns[index].nextMonth = getTsOfNextMonth(microseconds);
+						double oldMean = monthlyReturns[index].mean;
+						monthlyReturns[index].mean += (monthlyReturns[index].current - monthlyReturns[index].mean) / (double) ++monthlyReturns[index].n;
+						monthlyReturns[index].m2 += (monthlyReturns[index].current - oldMean) * (monthlyReturns[index].current - monthlyReturns[index].mean);
+						monthlyReturns[index].current = profitMargin;
+					}
+
+					if (!win) {
+						drawdowns[index].current *= profitMargin;
+
+						// consider moving start to the trade entry instead of exit
+						if (drawdownLengths[index].drawdownStart == 0)
+							drawdownLengths[index].drawdownStart = microseconds;
+
+						lossStreaks[index].current++;
+					} else {
+						if (lossStreaks[index].current != 0) {
+							drawdowns[index].max = min(drawdowns[index].max, drawdowns[index].current);
+							drawdowns[index].mean += (drawdowns[index].current - drawdowns[index].mean) / (double) ++lossStreaks[index].n;
+							drawdowns[index].current = 1;
+
+							long newDrawdownLength = microseconds - drawdownLengths[index].drawdownStart;
+							drawdownLengths[index].max = max(drawdownLengths[index].max, newDrawdownLength);
+							drawdownLengths[index].mean += ((double) newDrawdownLength - drawdownLengths[index].mean) / (double) lossStreaks[index].n;
+							drawdownLengths[index].drawdownStart = 0;
+
+							lossStreaks[index].max = max(lossStreaks[index].max, lossStreaks[index].current);
+							lossStreaks[index].mean += ((double) lossStreaks[index].current - lossStreaks[index].mean) / (double) lossStreaks[index].n;
+							lossStreaks[index].current = 0;
+						}
+					}
+				}
+			}
+		}
+
+		if (e.price == 0.0) {
+			if (buyVol >= c.buyVolPercentile && !inClose && !onWeekend) {
+				e = (entry) {price, true};
+				ls += 1;
+				tradeDurations[index].entryTimestamp = microseconds;
+			} else if (sellVol >= c.sellVolPercentile && !inClose && !onWeekend) {
+				e = (entry) {price, false};
+				ss += 1;
+				tradeDurations[index].entryTimestamp = microseconds;
 			}
 		}
 	}
