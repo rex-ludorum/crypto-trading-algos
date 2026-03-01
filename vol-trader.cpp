@@ -1107,6 +1107,7 @@ void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
 									 const vector<tradeRecord> &tradeRecordsVec,
 									 const vector<perfMetrics> &allPerfMetrics, bool listTrades) {
 	os << fixed;
+	os << "Combo index: " << idx << endl;
 	os << "Annualized return: " << tradeRecordsVec[idx].capital << endl;
 	os << "Target: " << format("{:.2f}", (double)comboVec[idx].target) << endl;
 	os << "Stop loss: " << format("{:.2f}", (double)comboVec[idx].stopLoss)
