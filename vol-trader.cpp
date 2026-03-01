@@ -1975,9 +1975,9 @@ int main(int argc, char *argv[]) {
 			}
 
 			for (size_t i = 0; i < comboVec.size(); i++) {
-				outputMetrics(outFile, maxElementIdx, comboVec, tradeRecordsVec,
-											allPerfMetrics, drawdownsVec, drawdownLengthsVec,
-											lossStreaksVec, tradeDurationsVec, listTrades);
+				outputMetrics(outFile, i, comboVec, tradeRecordsVec, allPerfMetrics,
+											drawdownsVec, drawdownLengthsVec, lossStreaksVec,
+											tradeDurationsVec, listTrades);
 				/*
 				if (listTrades) {
 					for (size_t j = 0; j < allTrades[i].size(); j++) {
