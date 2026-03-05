@@ -583,106 +583,61 @@ __kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWit
 			double profitMargin;
 			if (e.isLong) {
 				profitMargin = price / e.price;
-				if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
-					capital *= profitMargin;
-					e = (entry) {0.0, false};
-					bool win = profitMargin >= 1.0;
-					lw += win;
-					ll += !win;
-					tradesInInterval++;
-
-					long newTradeDuration = microseconds - tradeDurations[index].entryTimestamp;
-					tradeDurations[index].max = max(tradeDurations[index].max, newTradeDuration);
-					tradeDurations[index].mean += ((double) newTradeDuration - tradeDurations[index].mean) / (double) ++tradeDurations[index].n;
-
-					if (monthlyReturns[index].nextMonth == 0)
-						monthlyReturns[index].nextMonth = getTsOfNextMonth(microseconds);
-
-					if (microseconds < monthlyReturns[index].nextMonth) {
-						monthlyReturns[index].current *= profitMargin;
-					} else {
-						monthlyReturns[index].nextMonth = getTsOfNextMonth(microseconds);
-						double oldMean = monthlyReturns[index].mean;
-						monthlyReturns[index].mean += (monthlyReturns[index].current - monthlyReturns[index].mean) / (double) ++monthlyReturns[index].n;
-						monthlyReturns[index].m2 += (monthlyReturns[index].current - oldMean) * (monthlyReturns[index].current - monthlyReturns[index].mean);
-						monthlyReturns[index].current = profitMargin;
-					}
-
-					if (!win) {
-						drawdowns[index].current *= profitMargin;
-
-						// consider moving start to the trade entry instead of exit
-						if (drawdownLengths[index].drawdownStart == 0)
-							drawdownLengths[index].drawdownStart = microseconds;
-
-						lossStreaks[index].current++;
-					} else {
-						if (lossStreaks[index].current != 0) {
-							drawdowns[index].max = min(drawdowns[index].max, drawdowns[index].current);
-							drawdowns[index].mean += (drawdowns[index].current - drawdowns[index].mean) / (double) ++lossStreaks[index].n;
-							drawdowns[index].current = 1;
-
-							long newDrawdownLength = microseconds - drawdownLengths[index].drawdownStart;
-							drawdownLengths[index].max = max(drawdownLengths[index].max, newDrawdownLength);
-							drawdownLengths[index].mean += ((double) newDrawdownLength - drawdownLengths[index].mean) / (double) lossStreaks[index].n;
-							drawdownLengths[index].drawdownStart = 0;
-
-							lossStreaks[index].max = max(lossStreaks[index].max, lossStreaks[index].current);
-							lossStreaks[index].mean += ((double) lossStreaks[index].current - lossStreaks[index].mean) / (double) lossStreaks[index].n;
-							lossStreaks[index].current = 0;
-						}
-					}
-				}
 			} else {
 				profitMargin = 2 - price / e.price;
-				if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
-					capital *= profitMargin;
-					e = (entry) {0.0, false};
-					bool win = profitMargin >= 1.0;
+			}
+			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+				capital *= profitMargin;
+				bool win = profitMargin >= 1.0;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
 					sw += win;
 					sl += !win;
-					tradesInInterval++;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
 
-					long newTradeDuration = microseconds - tradeDurations[index].entryTimestamp;
-					tradeDurations[index].max = max(tradeDurations[index].max, newTradeDuration);
-					tradeDurations[index].mean += ((double) newTradeDuration - tradeDurations[index].mean) / (double) ++tradeDurations[index].n;
+				long newTradeDuration = microseconds - tradeDurations[index].entryTimestamp;
+				tradeDurations[index].max = max(tradeDurations[index].max, newTradeDuration);
+				tradeDurations[index].mean += ((double) newTradeDuration - tradeDurations[index].mean) / (double) ++tradeDurations[index].n;
 
-					if (monthlyReturns[index].nextMonth == 0)
-						monthlyReturns[index].nextMonth = getTsOfNextMonth(microseconds);
+				if (monthlyReturns[index].nextMonth == 0)
+					monthlyReturns[index].nextMonth = getTsOfNextMonth(microseconds);
 
-					if (microseconds < monthlyReturns[index].nextMonth) {
-						monthlyReturns[index].current *= profitMargin;
-					} else {
-						monthlyReturns[index].nextMonth = getTsOfNextMonth(microseconds);
-						double oldMean = monthlyReturns[index].mean;
-						monthlyReturns[index].mean += (monthlyReturns[index].current - monthlyReturns[index].mean) / (double) ++monthlyReturns[index].n;
-						monthlyReturns[index].m2 += (monthlyReturns[index].current - oldMean) * (monthlyReturns[index].current - monthlyReturns[index].mean);
-						monthlyReturns[index].current = profitMargin;
-					}
+				if (microseconds < monthlyReturns[index].nextMonth) {
+					monthlyReturns[index].current *= profitMargin;
+				} else {
+					monthlyReturns[index].nextMonth = getTsOfNextMonth(microseconds);
+					double oldMean = monthlyReturns[index].mean;
+					monthlyReturns[index].mean += (monthlyReturns[index].current - monthlyReturns[index].mean) / (double) ++monthlyReturns[index].n;
+					monthlyReturns[index].m2 += (monthlyReturns[index].current - oldMean) * (monthlyReturns[index].current - monthlyReturns[index].mean);
+					monthlyReturns[index].current = profitMargin;
+				}
 
-					if (!win) {
-						drawdowns[index].current *= profitMargin;
+				if (!win) {
+					drawdowns[index].current *= profitMargin;
 
-						// consider moving start to the trade entry instead of exit
-						if (drawdownLengths[index].drawdownStart == 0)
-							drawdownLengths[index].drawdownStart = microseconds;
+					// consider moving start to the trade entry instead of exit
+					if (drawdownLengths[index].drawdownStart == 0)
+						drawdownLengths[index].drawdownStart = microseconds;
 
-						lossStreaks[index].current++;
-					} else {
-						if (lossStreaks[index].current != 0) {
-							drawdowns[index].max = min(drawdowns[index].max, drawdowns[index].current);
-							drawdowns[index].mean += (drawdowns[index].current - drawdowns[index].mean) / (double) ++lossStreaks[index].n;
-							drawdowns[index].current = 1;
+					lossStreaks[index].current++;
+				} else {
+					if (lossStreaks[index].current != 0) {
+						drawdowns[index].max = min(drawdowns[index].max, drawdowns[index].current);
+						drawdowns[index].mean += (drawdowns[index].current - drawdowns[index].mean) / (double) ++lossStreaks[index].n;
+						drawdowns[index].current = 1;
 
-							long newDrawdownLength = microseconds - drawdownLengths[index].drawdownStart;
-							drawdownLengths[index].max = max(drawdownLengths[index].max, newDrawdownLength);
-							drawdownLengths[index].mean += ((double) newDrawdownLength - drawdownLengths[index].mean) / (double) lossStreaks[index].n;
-							drawdownLengths[index].drawdownStart = 0;
+						long newDrawdownLength = microseconds - drawdownLengths[index].drawdownStart;
+						drawdownLengths[index].max = max(drawdownLengths[index].max, newDrawdownLength);
+						drawdownLengths[index].mean += ((double) newDrawdownLength - drawdownLengths[index].mean) / (double) lossStreaks[index].n;
+						drawdownLengths[index].drawdownStart = 0;
 
-							lossStreaks[index].max = max(lossStreaks[index].max, lossStreaks[index].current);
-							lossStreaks[index].mean += ((double) lossStreaks[index].current - lossStreaks[index].mean) / (double) lossStreaks[index].n;
-							lossStreaks[index].current = 0;
-						}
+						lossStreaks[index].max = max(lossStreaks[index].max, lossStreaks[index].current);
+						lossStreaks[index].mean += ((double) lossStreaks[index].current - lossStreaks[index].mean) / (double) lossStreaks[index].n;
+						lossStreaks[index].current = 0;
 					}
 				}
 			}
