@@ -640,10 +640,12 @@ int main(int argc, char *argv[]) {
 			for (string s : splits) {
 				rowPercentiles.emplace_back(stod(s));
 			}
+			/*
 			rowPercentiles.erase(rowPercentiles.begin() + PERCENTILE_CEILING,
 													 rowPercentiles.end());
 			rowPercentiles.erase(rowPercentiles.begin(),
 													 rowPercentiles.begin() + PERCENTILE_FLOOR);
+			*/
 			volDeltaPercentiles.emplace_back(rowPercentiles);
 		}
 		myFile.close();
