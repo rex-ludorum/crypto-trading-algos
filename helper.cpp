@@ -89,7 +89,7 @@ cl::Device getDefaultDevice() {
 	return devices[maxIdx];
 }
 
-void initializeDevice() {
+void initializeDevice(string filename) {
 	/**
 	 * Select the first available device.
 	 * */
@@ -98,7 +98,7 @@ void initializeDevice() {
 	/**
 	 * Read OpenCL kernel file as a string.
 	 * */
-	std::ifstream kernel_file("vol-trader.cl");
+	std::ifstream kernel_file(filename);
 	std::string src(std::istreambuf_iterator<char>(kernel_file),
 									(std::istreambuf_iterator<char>()));
 

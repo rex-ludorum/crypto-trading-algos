@@ -10,7 +10,8 @@ using std::vector;
 
 cl::Device getDefaultDevice(); // Return a device found in this OpenCL platform.
 
-void initializeDevice(); // Initialize device and compile kernel code.
+void initializeDevice(
+		string filename); // Initialize device and compile kernel code.
 
 vector<string> split(string const &input);
 

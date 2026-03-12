@@ -766,6 +766,7 @@ void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
 									 const vector<tradeDurations> &tradeDurationsVec,
 									 bool listTrades) {
 	os << fixed;
+	os << "Combo index: " << idx << endl;
 	os << "Annualized return: " << tradeRecordsVec[idx].capital << endl;
 	os << "Target: " << format("{:.2f}", (double)comboVec[idx].target) << endl;
 	os << "Stop loss: " << format("{:.2f}", (double)comboVec[idx].stopLoss)
@@ -945,7 +946,7 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	initializeDevice();
+	initializeDevice("vol-trader.cl");
 
 	vector<positionData> positionDatasVec(comboVec.size(), {0, 0.0, 0.0, 0});
 	bool initializedPositions = false;
@@ -971,6 +972,10 @@ int main(int argc, char *argv[]) {
 	} else {
 		// volKernel = cl::Kernel(program, "volTrader", &err);
 		volKernel = cl::Kernel(program, "volTraderWithIndicators", &err);
+	}
+	if (err != CL_SUCCESS) {
+		cout << "Error for creating kernel: " << err << endl;
+		return 1;
 	}
 
 	cl::Buffer inputTrades(context, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY,
@@ -1123,10 +1128,6 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	if (err != CL_SUCCESS) {
-		cout << "Error for creating volKernel: " << err << endl;
-		return 1;
-	}
 	err = volKernel.setArg(0, inputSize);
 	if (err != CL_SUCCESS) {
 		cout << "Error for volKernel setArg 0: " << err << endl;
