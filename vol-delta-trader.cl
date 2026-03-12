@@ -28,11 +28,6 @@ typedef struct __attribute__ ((packed)) entry {
 	bool isLong;
 } entry;
 
-typedef struct __attribute__ ((packed)) timeWindow {
-	int tradeIdx;
-	long timestamp;
-} timeWindow;
-
 typedef struct __attribute__ ((packed)) tradeRecord {
 	double capital;
 	int shorts;
@@ -42,17 +37,6 @@ typedef struct __attribute__ ((packed)) tradeRecord {
 	int longWins;
 	int longLosses;
 } tradeRecord;
-
-typedef struct __attribute__ ((packed)) positionData {
-	long timestamp;
-	double volDelta;
-	int tradeIdx;
-} positionData;
-
-typedef struct __attribute__ ((packed)) twMetadata {
-	int twTranslation;
-	int twStart;
-} twMetadata;
 
 typedef struct __attribute__ ((packed)) entryData {
 	double volDelta;
