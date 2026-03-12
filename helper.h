@@ -81,6 +81,18 @@ struct __attribute__((packed)) monthlyReturns {
 	cl_long nextMonth;
 };
 
+struct __attribute__((packed)) wins {
+	cl_double mean;
+	cl_double max;
+	cl_double min;
+};
+
+struct __attribute__((packed)) losses {
+	cl_double mean;
+	cl_double max;
+	cl_double min;
+};
+
 struct __attribute__((packed)) entry {
 	cl_double price;
 	cl_uchar isLong;
