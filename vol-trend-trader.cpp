@@ -778,7 +778,7 @@ int main(int argc, char *argv[]) {
 								 lossStreaksVecSize + tradeDurationsVecSize +
 								 monthlyReturnsVecSize;
 		cout << "Total size: " << totalSize << endl;
-		cout << "Total size: " << (double)totalSize / (double)1024 * 1024 * 1024
+		cout << "Total size: " << (double)totalSize / (double)(1024 * 1024 * 1024)
 				 << " GiB" << endl;
 	} else {
 		numTradesInIntervalVec = vector<cl_int>(comboVec.size(), 0);
@@ -796,8 +796,8 @@ int main(int argc, char *argv[]) {
 		}
 		totalSize += numTradesInIntervalVecSize;
 		cout << "Total size: " << totalSize << endl;
-		cout << "Total size: " << (double)totalSize / (double)1024 * 1024 * 1024
-				 << endl;
+		cout << "Total size: " << (double)totalSize / (double)(1024 * 1024 * 1024)
+				 << " GiB" << endl;
 	}
 
 	err = kernel.setArg(0, inputSize);

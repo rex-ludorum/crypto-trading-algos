@@ -46,17 +46,17 @@ using std::endl;
 #define FIFTEEN_MINUTES_MICROSECONDS 900000000
 #define ONE_MINUTE_MICROSECONDS 60000000
 
-#define NUM_WINDOWS 4
+#define NUM_WINDOWS 2
 
 #define MAX_TOTAL_TRADES 3189
 
 #define INCREMENT 1000000
 #define TRADE_CHUNK 50000000
 
-#define PERCENTILE_CEILING 30
-#define PERCENTILE_FLOOR 6
+#define PERCENTILE_CEILING 28
+#define PERCENTILE_FLOOR 9
 
-#define DELTA_PERCENTILE_CUTOFF 4
+#define DELTA_PERCENTILE_CUTOFF 8
 
 static size_t newStart;
 
@@ -784,7 +784,7 @@ int main(int argc, char *argv[]) {
 								 lossStreaksVecSize + tradeDurationsVecSize +
 								 monthlyReturnsVecSize;
 		cout << "Total size: " << totalSize << endl;
-		cout << "Total size: " << (double)totalSize / (double)1024 * 1024 * 1024
+		cout << "Total size: " << (double)totalSize / (double)(1024 * 1024 * 1024)
 				 << " GiB" << endl;
 	} else {
 		numTradesInIntervalVec = vector<cl_int>(comboVec.size(), 0);
@@ -802,8 +802,8 @@ int main(int argc, char *argv[]) {
 		}
 		totalSize += numTradesInIntervalVecSize;
 		cout << "Total size: " << totalSize << endl;
-		cout << "Total size: " << (double)totalSize / (double)1024 * 1024 * 1024
-				 << endl;
+		cout << "Total size: " << (double)totalSize / (double)(1024 * 1024 * 1024)
+				 << " GiB" << endl;
 	}
 
 	err = volKernel.setArg(0, inputSize);

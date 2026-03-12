@@ -938,7 +938,7 @@ int main(int argc, char *argv[]) {
 		entriesAndExits = vector<entryAndExit>(comboVec.size() * MAX_TOTAL_TRADES,
 																					 entryAndExit{});
 		cout << "Total size: " << totalSize << endl;
-		cout << "Total size: " << (double)totalSize / (double)1024 * 1024 * 1024
+		cout << "Total size: " << (double)totalSize / (double)(1024 * 1024 * 1024)
 				 << " GiB" << endl;
 	} else {
 		numTradesInIntervalVec = vector<int>(comboVec.size(), 0);
@@ -946,8 +946,8 @@ int main(int argc, char *argv[]) {
 				numTradesInIntervalVec.size() * sizeof(int);
 		totalSize += numTradesInIntervalVecSize;
 		cout << "Total size: " << totalSize << endl;
-		cout << "Total size: " << (double)totalSize / (double)1024 * 1024 * 1024
-				 << endl;
+		cout << "Total size: " << (double)totalSize / (double)(1024 * 1024 * 1024)
+				 << " GiB" << endl;
 	}
 
 	vector<tradeWithoutDate> tradesWithoutDates;
