@@ -224,7 +224,8 @@ void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
 	os << "Target: " << format("{:.2f}", (double)comboVec[idx].target) << endl;
 	os << "Stop loss: " << format("{:.2f}", (double)comboVec[idx].stopLoss)
 		 << endl;
-	os << "Entry threshold: " << comboVec[idx].entryThreshold << endl;
+	os << "Entry threshold: "
+		 << format("{:.2f}", (double)comboVec[idx].entryThreshold) << endl;
 	os << "Total trades: "
 		 << tradeRecordsVec[idx].shorts + tradeRecordsVec[idx].longs << endl;
 	os << "Wins: "
@@ -270,7 +271,8 @@ void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
 	os << "Target: " << format("{:.2f}", (double)comboVec[idx].target) << endl;
 	os << "Stop loss: " << format("{:.2f}", (double)comboVec[idx].stopLoss)
 		 << endl;
-	os << "Entry threshold: " << comboVec[idx].entryThreshold << endl;
+	os << "Entry threshold: "
+		 << format("{:.2f}", (double)comboVec[idx].entryThreshold) << endl;
 	os << "Total trades: "
 		 << tradeRecordsVec[idx].shorts + tradeRecordsVec[idx].longs << endl;
 	os << "Wins: "

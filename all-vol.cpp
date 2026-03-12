@@ -962,8 +962,8 @@ int main(int argc, char *argv[]) {
 
 	for (int i = 1; i < NUM_WINDOWS; i++) {
 		combos.emplace_back(cartesian_product(
-				indWindows[i], buyVolPercentiles[i], volDeltaPercentiles[i],
-				volDeltaPercentiles[i], sellVolPercentiles[i], stopLosses, targets));
+				indWindows[i], buyVolPercentiles[i], sellVolPercentiles[i],
+				volDeltaPercentiles[i], volDeltaPercentiles[i], stopLosses, targets));
 	}
 
 	vector<combo> comboVec;

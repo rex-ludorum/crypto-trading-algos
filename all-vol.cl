@@ -237,10 +237,10 @@ __kernel void volTraderWithIndicators(__global int* numTrades, __global tradeWit
 		}
 
 		if (e.price == 0.0) {
-			if (buyVol >= c.buyVolPercentile && volDelta >= c.buyDeltaPercentile && !inClose && !onWeekend) {
+			if (buyVol >= c.buyVolPercentile && volDelta >= c.buyVolDeltaPercentile && !inClose && !onWeekend) {
 				e = (entry) {price, true};
 				ls += 1;
-			} else if (sellVol >= c.sellVolPercentile && volDelta <= c.sellDeltaPercentile && !inClose && !onWeekend) {
+			} else if (sellVol >= c.sellVolPercentile && volDelta <= c.sellVolDeltaPercentile && !inClose && !onWeekend) {
 				e = (entry) {price, false};
 				ss += 1;
 			}
