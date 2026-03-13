@@ -53,10 +53,10 @@ using std::endl;
 #define INCREMENT 1000000
 #define TRADE_CHUNK 50000000
 
-#define PERCENTILE_CEILING 28
-#define PERCENTILE_FLOOR 9
+#define PERCENTILE_CEILING 25
+#define PERCENTILE_FLOOR 12
 
-#define DELTA_PERCENTILE_CUTOFF 8
+#define DELTA_PERCENTILE_CUTOFF 3
 
 static size_t newStart;
 
@@ -150,10 +150,12 @@ void computeIndicators(const vector<tradeWithoutDate> &tradesWithoutDates,
 			cout << "15 minute sell volume: " << ind.vols[0] << endl;
 			cout << "30 minute buy volume: " << ind.vols[3] << endl;
 			cout << "30 minute sell volume: " << ind.vols[2] << endl;
+			/*
 			cout << "45 minute buy volume: " << ind.vols[5] << endl;
 			cout << "45 minute sell volume: " << ind.vols[4] << endl;
 			cout << "60 minute buy volume: " << ind.vols[7] << endl;
 			cout << "60 minute sell volume: " << ind.vols[6] << endl;
+			*/
 			cout << defaultfloat;
 		}
 #endif
@@ -598,7 +600,7 @@ int main(int argc, char *argv[]) {
 								 get<6>(combos[i][j])};
 			// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
 			// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
-			if (c.stopLoss < c.target + 2.1 &&
+			if (c.stopLoss < c.target + 1.1 &&
 					c.buyVolDeltaPercentile >= c.sellVolDeltaPercentile)
 				comboVec.emplace_back(c);
 		}

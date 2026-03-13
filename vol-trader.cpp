@@ -53,8 +53,8 @@ using std::endl;
 #define INCREMENT 1000000
 #define TRADE_CHUNK 50000000
 
-#define PERCENTILE_CEILING 30
-#define PERCENTILE_FLOOR 6
+#define PERCENTILE_CEILING 25
+#define PERCENTILE_FLOOR 12
 
 static size_t newStart;
 
@@ -950,7 +950,7 @@ int main(int argc, char *argv[]) {
 								 get<4>(combos[i][j])};
 			// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
 			// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
-			if (c.stopLoss < c.target + 2.1)
+			if (c.stopLoss < c.target + 1.1)
 				comboVec.emplace_back(c);
 		}
 	}

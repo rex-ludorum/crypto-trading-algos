@@ -1,3 +1,5 @@
+#include "helper.h"
+#include <CL/opencl.hpp>
 #include <cassert>
 #include <chrono>
 #include <fstream>
@@ -383,7 +385,8 @@ int main(int argc, char *argv[]) {
 		combo c = {get<0>(combos[j]), get<1>(combos[j]), get<2>(combos[j])};
 		// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
 		// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
-		comboVec.emplace_back(c);
+		if (c.stopLoss < c.target + 1.1)
+			comboVec.emplace_back(c);
 	}
 	size_t comboVecSize = comboVec.size() * sizeof(combo);
 
