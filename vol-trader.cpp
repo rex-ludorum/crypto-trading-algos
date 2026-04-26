@@ -978,7 +978,7 @@ void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
 }
 
 int main(int argc, char *argv[]) {
-	bool writeResults = false, listTrades = false, snapshotting = true;
+	bool writeResults = false, listTrades = false, snapshotting = false;
 
 	bool isBTC;
 
