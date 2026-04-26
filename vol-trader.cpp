@@ -54,7 +54,7 @@ using std::endl;
 #define INCREMENT 1000000
 #define TRADE_CHUNK 50000000
 
-#define PERCENTILE_CEILING 25
+#define PERCENTILE_CEILING 30
 #define PERCENTILE_FLOOR 12
 
 static size_t newStart = 0;
@@ -1176,6 +1176,8 @@ int main(int argc, char *argv[]) {
 				cout << "Failed to read trade records" << endl;
 				return 1;
 			}
+		} else {
+			cout << "No snapshot file detected" << endl;
 		}
 	}
 
