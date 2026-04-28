@@ -1401,6 +1401,8 @@ int main(int argc, char *argv[]) {
 		numTradesInIntervalVec = vector<cl_int>(comboVec.size(), 0);
 		size_t numTradesInIntervalVecSize =
 				numTradesInIntervalVec.size() * sizeof(cl_int);
+		cout << "Size of number of trades in interval: "
+				 << numTradesInIntervalVecSize << endl;
 		if (snapshotting && snapshotFile.good()) {
 			if (!snapshotFile.read(
 							reinterpret_cast<char *>(numTradesInIntervalVec.data()),

@@ -4,6 +4,7 @@
 #include <cassert>
 #include <chrono>
 #include <fstream>
+#include <ios>
 #include <iostream>
 #include <ranges>
 #include <string>
@@ -18,6 +19,7 @@ using std::format;
 using std::generate;
 using std::get_time;
 using std::ifstream;
+using std::ios;
 using std::istringstream;
 using std::max;
 using std::max_element;
@@ -38,7 +40,6 @@ using std::chrono::microseconds;
 using std::chrono::system_clock;
 using std::ranges::views::cartesian_product;
 
-using std::cerr;
 using std::cout;
 using std::endl;
 
@@ -53,7 +54,9 @@ using std::endl;
 #define INCREMENT 1000000
 #define TRADE_CHUNK 50000000
 
-static size_t newStart;
+static size_t newStart = 0;
+static size_t globalIdx = 0;
+static string snapshotFilename;
 
 cl::Program program; // The program that will run on the device.
 cl::Context context; // The context which holds the device.
@@ -98,10 +101,13 @@ struct __attribute__((packed)) detailedTrade {
 
 void computeIndicators(const vector<tradeWithoutDate> &tradesWithoutDates,
 											 vector<indicators> &inds, vector<timeWindow> &tws,
-											 const vector<long long> &windows) {
+											 const vector<long long> &windows, bool firstRun) {
 #ifdef DEBUG
 	static size_t testIdx;
-	assert(inds.size() == newStart);
+	if (firstRun)
+		assert(inds.size() == 0);
+	else
+		assert(inds.size() == newStart);
 #endif
 	indicators ind{};
 	if (!inds.empty())
@@ -149,18 +155,70 @@ void computeIndicators(const vector<tradeWithoutDate> &tradesWithoutDates,
 	}
 }
 
+void saveSnapshot(size_t index, size_t start, const vector<entry> &entriesVec,
+									const vector<tradeRecord> &tradeRecordsVec,
+									const vector<cl_int> &numTradesInIntervalVec) {
+	ofstream file(snapshotFilename, ios::binary);
+	if (!file) {
+		cout << "Error opening snapshot file" << endl;
+		return;
+	}
+
+	file.write(reinterpret_cast<const char *>(&index), sizeof(index));
+	file.write(reinterpret_cast<const char *>(&start), sizeof(start));
+	file.write(reinterpret_cast<const char *>(entriesVec.data()),
+						 entriesVec.size() * sizeof(entry));
+	file.write(reinterpret_cast<const char *>(tradeRecordsVec.data()),
+						 tradeRecordsVec.size() * sizeof(tradeRecord));
+	file.write(reinterpret_cast<const char *>(numTradesInIntervalVec.data()),
+						 numTradesInIntervalVec.size() * sizeof(cl_int));
+	file.close();
+}
+
+void saveSnapshot(size_t index, size_t start, const vector<entry> &entriesVec,
+									const vector<tradeRecord> &tradeRecordsVec,
+									vector<drawdowns> &drawdownsVec,
+									vector<drawdownLengths> &drawdownLengthsVec,
+									vector<lossStreaks> &lossStreaksVec,
+									vector<tradeDurations> &tradeDurationsVec,
+									vector<monthlyReturns> &monthlyReturnsVec) {
+	ofstream file(snapshotFilename, ios::binary);
+	if (!file) {
+		cout << "Error opening snapshot file" << endl;
+		return;
+	}
+
+	file.write(reinterpret_cast<const char *>(&index), sizeof(index));
+	file.write(reinterpret_cast<const char *>(&start), sizeof(start));
+	file.write(reinterpret_cast<const char *>(entriesVec.data()),
+						 entriesVec.size() * sizeof(entry));
+	file.write(reinterpret_cast<const char *>(tradeRecordsVec.data()),
+						 tradeRecordsVec.size() * sizeof(tradeRecord));
+	file.write(reinterpret_cast<const char *>(drawdownsVec.data()),
+						 drawdownsVec.size() * sizeof(drawdowns));
+	file.write(reinterpret_cast<const char *>(drawdownLengthsVec.data()),
+						 drawdownLengthsVec.size() * sizeof(drawdownLengths));
+	file.write(reinterpret_cast<const char *>(lossStreaksVec.data()),
+						 lossStreaksVec.size() * sizeof(lossStreaks));
+	file.write(reinterpret_cast<const char *>(tradeDurationsVec.data()),
+						 tradeDurationsVec.size() * sizeof(tradeDurations));
+	file.write(reinterpret_cast<const char *>(monthlyReturnsVec.data()),
+						 monthlyReturnsVec.size() * sizeof(monthlyReturns));
+	file.close();
+}
+
 int processTradesWithIndicators(
 		const cl::CommandQueue &queue, const cl::Kernel &kernel,
 		vector<tradeWithoutDate> &tradesWithoutDates, vector<indicators> &inds,
 		vector<timeWindow> &tws, const vector<combo> &comboVec,
 		const cl::Buffer &inputTrades, const cl::Buffer &indicatorBuffer,
-		const cl::Buffer &inputSize, const cl::Buffer &numTradesInIntervalBuf) {
+		const cl::Buffer &inputSize, const cl::Buffer &entries,
+		const cl::Buffer &tradeRecords, const cl::Buffer &numTradesInIntervalBuf,
+		vector<entry> &entriesVec, vector<tradeRecord> &tradeRecordsVec,
+		vector<cl_int> &numTradesInIntervalVec, bool snapshotting) {
 	size_t currIdx = newStart;
-	static size_t globalIdx = 0;
 
 	cl_int err;
-
-	vector<cl_int> numTradesInIntervalVec(comboVec.size(), 0);
 
 	int maxTradesPerInterval = 0;
 
@@ -244,6 +302,35 @@ int processTradesWithIndicators(
 	tradesWithoutDates.erase(tradesWithoutDates.begin(),
 													 tradesWithoutDates.begin() + minTradeIdx);
 	inds.erase(inds.begin(), inds.begin() + minTradeIdx);
+
+	if (snapshotting) {
+		auto beforeSnapshotTime = high_resolution_clock::now();
+		err = queue.enqueueReadBuffer(
+				entries, CL_FALSE, 0, comboVec.size() * sizeof(entry), &entriesVec[0]);
+		if (err != CL_SUCCESS) {
+			cout << "Error for enqueueReadBuffer entries: " << err << endl;
+			return -1;
+		}
+		err = queue.enqueueReadBuffer(tradeRecords, CL_FALSE, 0,
+																	comboVec.size() * sizeof(tradeRecord),
+																	&tradeRecordsVec[0]);
+		if (err != CL_SUCCESS) {
+			cout << "Error for enqueueReadBuffer tradeRecords: " << err << endl;
+			return -1;
+		}
+		err = queue.finish();
+		if (err != CL_SUCCESS) {
+			cout << "Error for finish: " << err << endl;
+			return -1;
+		}
+		saveSnapshot(globalIdx, newStart, entriesVec, tradeRecordsVec,
+								 numTradesInIntervalVec);
+		auto duration = duration_cast<microseconds>(high_resolution_clock::now() -
+																								beforeSnapshotTime);
+		cout << "Time taken to take snapshot: "
+				 << (double)duration.count() / 1000000 << " seconds" << endl;
+	}
+
 	return maxTradesPerInterval;
 }
 
@@ -252,9 +339,17 @@ void processTradesWithOnlineAlgs(
 		vector<tradeWithoutDate> &tradesWithoutDates, vector<indicators> &inds,
 		vector<timeWindow> &tws, const vector<combo> &comboVec,
 		const cl::Buffer &inputTrades, const cl::Buffer &indicatorBuffer,
-		const cl::Buffer &inputSize) {
+		const cl::Buffer &inputSize, const cl::Buffer &entries,
+		const cl::Buffer &tradeRecords, const cl::Buffer &drawdownsBuf,
+		const cl::Buffer &drawdownLengthsBuf, const cl::Buffer &lossStreaksBuf,
+		const cl::Buffer &tradeDurationsBuf, const cl::Buffer &monthlyReturnsBuf,
+		vector<entry> &entriesVec, vector<tradeRecord> &tradeRecordsVec,
+		vector<drawdowns> &drawdownsVec,
+		vector<drawdownLengths> &drawdownLengthsVec,
+		vector<lossStreaks> &lossStreaksVec,
+		vector<tradeDurations> &tradeDurationsVec,
+		vector<monthlyReturns> &monthlyReturnsVec, bool snapshotting) {
 	size_t currIdx = newStart;
-	static size_t globalIdx = 0;
 
 	cl_int err;
 
@@ -323,6 +418,71 @@ void processTradesWithOnlineAlgs(
 	tradesWithoutDates.erase(tradesWithoutDates.begin(),
 													 tradesWithoutDates.begin() + minTradeIdx);
 	inds.erase(inds.begin(), inds.begin() + minTradeIdx);
+
+	if (snapshotting) {
+		auto beforeSnapshotTime = high_resolution_clock::now();
+		err = queue.enqueueReadBuffer(
+				entries, CL_FALSE, 0, comboVec.size() * sizeof(entry), &entriesVec[0]);
+		if (err != CL_SUCCESS) {
+			cout << "Error for enqueueReadBuffer entries: " << err << endl;
+			return;
+		}
+		err = queue.enqueueReadBuffer(tradeRecords, CL_FALSE, 0,
+																	comboVec.size() * sizeof(tradeRecord),
+																	&tradeRecordsVec[0]);
+		if (err != CL_SUCCESS) {
+			cout << "Error for enqueueReadBuffer tradeRecords: " << err << endl;
+			return;
+		}
+		err = queue.enqueueReadBuffer(drawdownsBuf, CL_FALSE, 0,
+																	comboVec.size() * sizeof(drawdowns),
+																	&drawdownsVec[0]);
+		if (err != CL_SUCCESS) {
+			cout << "Error for enqueueReadBuffer drawdownsBuf: " << err << endl;
+			return;
+		}
+		err = queue.enqueueReadBuffer(drawdownLengthsBuf, CL_FALSE, 0,
+																	comboVec.size() * sizeof(drawdownLengths),
+																	&drawdownLengthsVec[0]);
+		if (err != CL_SUCCESS) {
+			cout << "Error for enqueueReadBuffer drawdownLengthsBuf: " << err << endl;
+			return;
+		}
+		err = queue.enqueueReadBuffer(lossStreaksBuf, CL_FALSE, 0,
+																	comboVec.size() * sizeof(lossStreaks),
+																	&lossStreaksVec[0]);
+		if (err != CL_SUCCESS) {
+			cout << "Error for enqueueReadBuffer lossStreaksBuf: " << err << endl;
+			return;
+		}
+		err = queue.enqueueReadBuffer(tradeDurationsBuf, CL_FALSE, 0,
+																	comboVec.size() * sizeof(tradeDurations),
+																	&tradeDurationsVec[0]);
+		if (err != CL_SUCCESS) {
+			cout << "Error for enqueueReadBuffer tradeDurationsBuf: " << err << endl;
+			return;
+		}
+		err = queue.enqueueReadBuffer(monthlyReturnsBuf, CL_FALSE, 0,
+																	comboVec.size() * sizeof(monthlyReturns),
+																	&monthlyReturnsVec[0]);
+		if (err != CL_SUCCESS) {
+			cout << "Error for enqueueReadBuffer monthlyReturnsBuf: " << err << endl;
+			return;
+		}
+		err = queue.finish();
+		if (err != CL_SUCCESS) {
+			cout << "Error for finish: " << err << endl;
+			return;
+		}
+		saveSnapshot(globalIdx, newStart, entriesVec, tradeRecordsVec, drawdownsVec,
+								 drawdownLengthsVec, lossStreaksVec, tradeDurationsVec,
+								 monthlyReturnsVec);
+		auto duration = duration_cast<microseconds>(high_resolution_clock::now() -
+																								beforeSnapshotTime);
+		cout << "Time taken to take snapshot: "
+				 << (double)duration.count() / 1000000 << " seconds" << endl;
+	}
+
 	return;
 }
 
@@ -430,12 +590,12 @@ void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
 }
 
 int main(int argc, char *argv[]) {
-	bool writeResults = false, listTrades = false;
+	bool writeResults = false, listTrades = false, snapshotting = false;
 
 	bool isBTC;
 
 	int opt;
-	while ((opt = getopt(argc, argv, "wl")) != -1) {
+	while ((opt = getopt(argc, argv, "wls")) != -1) {
 		switch (opt) {
 		case 'w':
 			writeResults = true;
@@ -444,6 +604,10 @@ int main(int argc, char *argv[]) {
 		case 'l':
 			listTrades = true;
 			cout << "Enabled listing trades" << endl;
+			break;
+		case 's':
+			snapshotting = true;
+			cout << "Enabled snapshotting" << endl;
 			break;
 		case '?':
 			cout << "Got unknown option: " << (char)optopt << endl;
@@ -459,11 +623,36 @@ int main(int argc, char *argv[]) {
 		exit(EXIT_FAILURE);
 	}
 
+	string dateSuffix;
+	string firstFile = argv[optind];
+	size_t firstDateFirstUnderscore = firstFile.find("_");
+	size_t firstDateSecondUnderscore =
+			firstFile.find("_", firstDateFirstUnderscore + 1);
+	dateSuffix += firstFile.substr(firstDateFirstUnderscore + 1,
+																 firstDateSecondUnderscore -
+																		 firstDateFirstUnderscore - 1);
+	dateSuffix += "_";
+	string lastFile = argv[argc - 1];
+	size_t lastDateFirstUnderscore = lastFile.find("_");
+	size_t lastDateSecondUnderscore =
+			lastFile.find("_", lastDateFirstUnderscore + 1);
+	size_t lastDateLastPeriod = lastFile.rfind(".");
+	dateSuffix +=
+			lastFile.substr(lastDateSecondUnderscore + 1,
+											lastDateLastPeriod - lastDateSecondUnderscore - 1);
+
 	string symbol(argv[optind]);
-	if (symbol.find("BTC") != string::npos)
+	if (symbol.find("BTC") != string::npos) {
 		isBTC = true;
-	else
+		snapshotFilename = "snapshotVolBTC";
+	} else {
 		isBTC = false;
+		snapshotFilename = "snapshotVolETH";
+	}
+	if (listTrades)
+		snapshotFilename += "Detailed";
+	snapshotFilename += "_";
+	snapshotFilename += dateSuffix + ".bin";
 
 #if defined(__WIN64)
 	_putenv("TZ=/usr/share/zoneinfo/UTC");
@@ -548,6 +737,37 @@ int main(int argc, char *argv[]) {
 	size_t entriesVecSize = entriesVec.size() * sizeof(entry);
 	vector<tradeRecord> tradeRecordsVec(comboVec.size(), {1.0, 0, 0, 0, 0, 0, 0});
 	size_t tradeRecordsVecSize = tradeRecordsVec.size() * sizeof(tradeRecord);
+
+	ifstream snapshotFile;
+	if (snapshotting) {
+		snapshotFile.open(snapshotFilename, ios::binary);
+		if (snapshotFile.good()) {
+			if (!snapshotFile.read(reinterpret_cast<char *>(&globalIdx),
+														 sizeof(globalIdx))) {
+				cout << "Failed to read previous index" << endl;
+				return 1;
+			}
+			cout << "globalIdx: " << globalIdx << endl;
+			if (!snapshotFile.read(reinterpret_cast<char *>(&newStart),
+														 sizeof(newStart))) {
+				cout << "Failed to read new start" << endl;
+				return 1;
+			}
+			cout << "newStart: " << newStart << endl;
+			if (!snapshotFile.read(reinterpret_cast<char *>(entriesVec.data()),
+														 comboVec.size() * sizeof(entry))) {
+				cout << "Failed to read entries" << endl;
+				return 1;
+			}
+			if (!snapshotFile.read(reinterpret_cast<char *>(tradeRecordsVec.data()),
+														 comboVec.size() * sizeof(tradeRecord))) {
+				cout << "Failed to read trade records" << endl;
+				return 1;
+			}
+		} else {
+			cout << "No snapshot file detected" << endl;
+		}
+	}
 
 	int maxTradesPerInterval = 0;
 
@@ -641,22 +861,61 @@ int main(int argc, char *argv[]) {
 	size_t totalSize = comboVecSize + inputTradesSize + indicatorsSize +
 										 entriesVecSize + tradeRecordsVecSize;
 	if (listTrades) {
-		/*
-		entriesAndExitsVec = vector<entryAndExit>(
-				comboVec.size() * MAX_TOTAL_TRADES, entryAndExit{});
-		entriesAndExitsBuf = cl::Buffer(
-				context,
-				CL_MEM_WRITE_ONLY | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-				comboVec.size() * sizeof(entryAndExit) * MAX_TOTAL_TRADES,
-				&entriesAndExitsVec[0], &err);
-		if (err != CL_SUCCESS) {
-			cout << "Error for entriesAndExitsBuf: " << err << endl;
-			return 1;
-		}
-		*/
 		drawdownsVec = vector<drawdowns>(comboVec.size(), {1.0, 0.0, 1.0});
 		size_t drawdownsVecSize = drawdownsVec.size() * sizeof(drawdowns);
 		cout << "Size of drawdowns: " << drawdownsVecSize << endl;
+
+		drawdownLengthsVec =
+				vector<drawdownLengths>(comboVec.size(), drawdownLengths{});
+		size_t drawdownLengthsVecSize =
+				drawdownLengthsVec.size() * sizeof(drawdownLengths);
+		cout << "Size of drawdown lengths: " << drawdownLengthsVecSize << endl;
+
+		lossStreaksVec = vector<lossStreaks>(comboVec.size(), lossStreaks{});
+		size_t lossStreaksVecSize = lossStreaksVec.size() * sizeof(lossStreaks);
+		cout << "Size of loss streaks: " << lossStreaksVecSize << endl;
+
+		tradeDurationsVec =
+				vector<tradeDurations>(comboVec.size(), tradeDurations{});
+		size_t tradeDurationsVecSize =
+				tradeDurationsVec.size() * sizeof(tradeDurations);
+		cout << "Size of trade durations: " << tradeDurationsVecSize << endl;
+
+		monthlyReturnsVec =
+				vector<monthlyReturns>(comboVec.size(), monthlyReturns{});
+		size_t monthlyReturnsVecSize =
+				monthlyReturnsVec.size() * sizeof(monthlyReturns);
+		cout << "Size of monthly returns: " << monthlyReturnsVecSize << endl;
+
+		if (snapshotting && snapshotFile.good()) {
+			if (!snapshotFile.read(reinterpret_cast<char *>(drawdownsVec.data()),
+														 comboVec.size() * sizeof(drawdowns))) {
+				cout << "Failed to read drawdowns" << endl;
+				return 1;
+			}
+			if (!snapshotFile.read(
+							reinterpret_cast<char *>(drawdownLengthsVec.data()),
+							comboVec.size() * sizeof(drawdownLengths))) {
+				cout << "Failed to read drawdown lengths" << endl;
+				return 1;
+			}
+			if (!snapshotFile.read(reinterpret_cast<char *>(lossStreaksVec.data()),
+														 comboVec.size() * sizeof(lossStreaks))) {
+				cout << "Failed to read loss streaks" << endl;
+				return 1;
+			}
+			if (!snapshotFile.read(reinterpret_cast<char *>(tradeDurationsVec.data()),
+														 comboVec.size() * sizeof(tradeDurations))) {
+				cout << "Failed to read trade durations" << endl;
+				return 1;
+			}
+			if (!snapshotFile.read(reinterpret_cast<char *>(monthlyReturnsVec.data()),
+														 comboVec.size() * sizeof(monthlyReturns))) {
+				cout << "Failed to read monthly returns" << endl;
+				return 1;
+			}
+		}
+
 		drawdownsBuf = cl::Buffer(
 				context,
 				CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
@@ -665,11 +924,7 @@ int main(int argc, char *argv[]) {
 			cout << "Error for drawdownsBuf: " << err << endl;
 			return 1;
 		}
-		drawdownLengthsVec =
-				vector<drawdownLengths>(comboVec.size(), drawdownLengths{});
-		size_t drawdownLengthsVecSize =
-				drawdownLengthsVec.size() * sizeof(drawdownLengths);
-		cout << "Size of drawdown lengths: " << drawdownLengthsVecSize << endl;
+
 		drawdownLengthsBuf = cl::Buffer(context,
 																		CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY |
 																				CL_MEM_COPY_HOST_PTR,
@@ -679,9 +934,7 @@ int main(int argc, char *argv[]) {
 			cout << "Error for drawdownLengthsBuf: " << err << endl;
 			return 1;
 		}
-		lossStreaksVec = vector<lossStreaks>(comboVec.size(), lossStreaks{});
-		size_t lossStreaksVecSize = lossStreaksVec.size() * sizeof(lossStreaks);
-		cout << "Size of loss streaks: " << lossStreaksVecSize << endl;
+
 		lossStreaksBuf = cl::Buffer(
 				context,
 				CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
@@ -690,11 +943,7 @@ int main(int argc, char *argv[]) {
 			cout << "Error for lossStreaksBuf: " << err << endl;
 			return 1;
 		}
-		tradeDurationsVec =
-				vector<tradeDurations>(comboVec.size(), tradeDurations{});
-		size_t tradeDurationsVecSize =
-				tradeDurationsVec.size() * sizeof(tradeDurations);
-		cout << "Size of trade durations: " << tradeDurationsVecSize << endl;
+
 		tradeDurationsBuf = cl::Buffer(
 				context,
 				CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
@@ -703,11 +952,7 @@ int main(int argc, char *argv[]) {
 			cout << "Error for tradeDurationsBuf: " << err << endl;
 			return 1;
 		}
-		monthlyReturnsVec =
-				vector<monthlyReturns>(comboVec.size(), monthlyReturns{});
-		size_t monthlyReturnsVecSize =
-				monthlyReturnsVec.size() * sizeof(monthlyReturns);
-		cout << "Size of monthly returns: " << monthlyReturnsVecSize << endl;
+
 		monthlyReturnsBuf = cl::Buffer(
 				context,
 				CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
@@ -728,6 +973,14 @@ int main(int argc, char *argv[]) {
 				numTradesInIntervalVec.size() * sizeof(cl_int);
 		cout << "Size of number of trades in interval: "
 				 << numTradesInIntervalVecSize << endl;
+		if (snapshotting && snapshotFile.good()) {
+			if (!snapshotFile.read(
+							reinterpret_cast<char *>(numTradesInIntervalVec.data()),
+							comboVec.size() * sizeof(cl_int))) {
+				cout << "Failed to read number of trades in interval" << endl;
+				return 1;
+			}
+		}
 		numTradesInIntervalBuf = cl::Buffer(
 				context,
 				CL_MEM_WRITE_ONLY | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
@@ -741,6 +994,8 @@ int main(int argc, char *argv[]) {
 		cout << "Total size: " << (double)totalSize / (double)(1024 * 1024 * 1024)
 				 << " GiB" << endl;
 	}
+	if (snapshotFile.good())
+		snapshotFile.close();
 
 	err = volKernel.setArg(0, inputSize);
 	if (err != CL_SUCCESS) {
@@ -815,12 +1070,15 @@ int main(int argc, char *argv[]) {
 			 << " seconds" << endl;
 
 	long long firstTimestamp = 0, lastTimestamp = 0;
+	bool firstRun = true;
 #ifdef DEBUG
 	int lastId = 0;
+	bool startedCollectingTrades = false;
 #endif
 
 	auto beforeFileReadTime = high_resolution_clock::now();
 	auto afterFileReadTime = high_resolution_clock::now();
+	size_t currIdx = 0;
 	for (int i = optind; i < argc; i++) {
 		myFile.open(argv[i]);
 		if (myFile.is_open()) {
@@ -870,14 +1128,33 @@ int main(int argc, char *argv[]) {
 #endif
 				lastTimestamp = t.timestamp;
 				// trades.emplace_back(t);
-				tradesWithoutDates.emplace_back(convertTrade(t));
 
-				if (!initializedPositions) {
-					beforeFileReadTime = high_resolution_clock::now();
-					for (auto &tw : tws) {
-						tw.timestamp = t.timestamp;
+				if (!snapshotting ||
+						(snapshotting && currIdx >= globalIdx - newStart)) {
+#ifdef DEBUG
+					startedCollectingTrades = true;
+#endif
+					tradesWithoutDates.emplace_back(convertTrade(t));
+					if (!initializedPositions) {
+						/*
+						for (auto &pos : positionDatasVec) {
+							pos.timestamp = t.timestamp;
+						}
+						*/
+						for (auto &tw : tws) {
+							tw.timestamp = t.timestamp;
+						}
+						initializedPositions = true;
 					}
-					initializedPositions = true;
+				} else {
+#ifdef DEBUG
+					if (startedCollectingTrades) {
+						cout << "Gap in collecting trades!" << endl;
+						cout << "currIdx: " << currIdx << endl;
+						cout << "globalIdx: " << globalIdx << endl;
+						cout << "newStart: " << newStart << endl;
+					}
+#endif
 				}
 
 				justProcessed = false;
@@ -889,25 +1166,39 @@ int main(int argc, char *argv[]) {
 							 << (double)duration.count() / 1000000 << " seconds" << endl;
 
 					auto beforeIndicatorTime = high_resolution_clock::now();
-					computeIndicators(tradesWithoutDates, indicators, tws, windows);
+					computeIndicators(tradesWithoutDates, indicators, tws, windows,
+														firstRun);
+					if (firstRun)
+						firstRun = false;
 					auto afterIndicatorTime = high_resolution_clock::now();
 					duration = duration_cast<microseconds>(afterIndicatorTime -
 																								 beforeIndicatorTime);
 					cout << "Time taken to compute indicators: "
 							 << (double)duration.count() / 1000000 << " seconds" << endl;
 					if (listTrades)
-						processTradesWithOnlineAlgs(queue, volKernel, tradesWithoutDates,
-																				indicators, tws, comboVec, inputTrades,
-																				indicatorBuffer, inputSize);
+						processTradesWithOnlineAlgs(
+								queue, volKernel, tradesWithoutDates, indicators, tws, comboVec,
+								inputTrades, indicatorBuffer, inputSize, entries, tradeRecords,
+								drawdownsBuf, drawdownLengthsBuf, lossStreaksBuf,
+								tradeDurationsBuf, monthlyReturnsBuf, entriesVec,
+								tradeRecordsVec, drawdownsVec, drawdownLengthsVec,
+								lossStreaksVec, tradeDurationsVec, monthlyReturnsVec,
+								snapshotting);
 					else
-						maxTradesPerInterval =
-								max(maxTradesPerInterval,
-										processTradesWithIndicators(
-												queue, volKernel, tradesWithoutDates, indicators, tws,
-												comboVec, inputTrades, indicatorBuffer, inputSize,
-												numTradesInIntervalBuf));
+						maxTradesPerInterval = max(
+								maxTradesPerInterval,
+								// processTrades(queue, volKernel, tradesWithoutDates,
+								// comboVec, 							inputTrades, inputSize,
+								// twBetweenRunData, 							positionDatas,
+								// numTradesInIntervalBuf));
+								processTradesWithIndicators(
+										queue, volKernel, tradesWithoutDates, indicators, tws,
+										comboVec, inputTrades, indicatorBuffer, inputSize, entries,
+										tradeRecords, numTradesInIntervalBuf, entriesVec,
+										tradeRecordsVec, numTradesInIntervalVec, snapshotting));
 					justProcessed = true;
 				}
+				currIdx++;
 			}
 			myFile.close();
 		}
@@ -920,24 +1211,46 @@ int main(int argc, char *argv[]) {
 		cout << "Time taken to read trades: " << (double)duration.count() / 1000000
 				 << " seconds" << endl;
 
-		auto beforeIndicatorTime = high_resolution_clock::now();
-		computeIndicators(tradesWithoutDates, indicators, tws, windows);
-		auto afterIndicatorTime = high_resolution_clock::now();
-		duration =
-				duration_cast<microseconds>(afterIndicatorTime - beforeIndicatorTime);
-		cout << "Time taken to compute indicators: "
-				 << (double)duration.count() / 1000000 << " seconds" << endl;
-		if (listTrades)
-			processTradesWithOnlineAlgs(queue, volKernel, tradesWithoutDates,
-																	indicators, tws, comboVec, inputTrades,
-																	indicatorBuffer, inputSize);
-		else
-			maxTradesPerInterval =
-					max(maxTradesPerInterval,
-							processTradesWithIndicators(queue, volKernel, tradesWithoutDates,
-																					indicators, tws, comboVec,
-																					inputTrades, indicatorBuffer,
-																					inputSize, numTradesInIntervalBuf));
+		if (tradesWithoutDates.size() > 0) {
+			auto beforeIndicatorTime = high_resolution_clock::now();
+			computeIndicators(tradesWithoutDates, indicators, tws, windows, firstRun);
+			if (firstRun)
+				firstRun = false;
+			auto afterIndicatorTime = high_resolution_clock::now();
+			duration =
+					duration_cast<microseconds>(afterIndicatorTime - beforeIndicatorTime);
+			cout << "Time taken to compute indicators: "
+					 << (double)duration.count() / 1000000 << " seconds" << endl;
+			if (listTrades)
+				// processTradesWithListing(queue, volKernel, tradesWithoutDates,
+				// comboVec, 												 inputTrades, inputSize,
+				// twBetweenRunData, 												 positionDatas,
+				// numTradesInIntervalBuf,
+				//												 allTrades);
+				// processTradesWithListingAndIndicators(
+				// 		queue, volKernel, tradesWithoutDates, indicators, tws, comboVec,
+				// 		inputTrades, indicatorBuffer, inputSize, entriesAndExitsBuf,
+				// 		allTrades);
+				processTradesWithOnlineAlgs(
+						queue, volKernel, tradesWithoutDates, indicators, tws, comboVec,
+						inputTrades, indicatorBuffer, inputSize, entries, tradeRecords,
+						drawdownsBuf, drawdownLengthsBuf, lossStreaksBuf, tradeDurationsBuf,
+						monthlyReturnsBuf, entriesVec, tradeRecordsVec, drawdownsVec,
+						drawdownLengthsVec, lossStreaksVec, tradeDurationsVec,
+						monthlyReturnsVec, snapshotting);
+			else
+				maxTradesPerInterval =
+						max(maxTradesPerInterval,
+								// processTrades(queue, volKernel, tradesWithoutDates, comboVec,
+								// 							inputTrades, inputSize, twBetweenRunData,
+								// 							positionDatas, numTradesInIntervalBuf));
+								processTradesWithIndicators(
+										queue, volKernel, tradesWithoutDates, indicators, tws,
+										comboVec, inputTrades, indicatorBuffer, inputSize, entries,
+										tradeRecords, numTradesInIntervalBuf, entriesVec,
+										tradeRecordsVec, numTradesInIntervalVec, snapshotting));
+		} else
+			cout << "Run was already finished in the snapshot" << endl;
 	}
 
 	err = queue.enqueueReadBuffer(tradeRecords, CL_FALSE, 0,
@@ -1003,7 +1316,14 @@ int main(int argc, char *argv[]) {
 	cout << "Time taken to run kernel: " << (double)duration.count() / 1000000
 			 << " seconds" << endl;
 
+	string resultsFilename = "resultsVolDelta";
+	if (isBTC)
+		resultsFilename += "BTC";
+	else
+		resultsFilename += "ETH";
+
 	if (listTrades) {
+		resultsFilename += "Detailed";
 		// analyzePerf(allPerfMetrics, allTrades);
 		analyzePerf(allPerfMetrics, monthlyReturnsVec, drawdownsVec);
 
@@ -1012,13 +1332,12 @@ int main(int argc, char *argv[]) {
 		cout << "Time taken to analyze models: "
 				 << (double)duration.count() / 1000000 << " seconds" << endl;
 	}
+	resultsFilename += "_";
+	resultsFilename += dateSuffix;
 
 	if (writeResults) {
 		ofstream outFile;
-		if (isBTC)
-			outFile.open("resultsVolDeltaBTC");
-		else
-			outFile.open("resultsVolDeltaETH");
+		outFile.open(resultsFilename);
 		if (outFile.is_open()) {
 			int maxElementIdx =
 					max_element(tradeRecordsVec.begin(), tradeRecordsVec.end(),
