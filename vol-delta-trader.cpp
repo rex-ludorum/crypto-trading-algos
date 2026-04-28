@@ -644,10 +644,10 @@ int main(int argc, char *argv[]) {
 	string symbol(argv[optind]);
 	if (symbol.find("BTC") != string::npos) {
 		isBTC = true;
-		snapshotFilename = "snapshotVolBTC";
+		snapshotFilename = "snapshotVolDeltaBTC";
 	} else {
 		isBTC = false;
-		snapshotFilename = "snapshotVolETH";
+		snapshotFilename = "snapshotVolDeltaETH";
 	}
 	if (listTrades)
 		snapshotFilename += "Detailed";

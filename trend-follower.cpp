@@ -527,10 +527,10 @@ int main(int argc, char *argv[]) {
 	string symbol(argv[optind]);
 	if (symbol.find("BTC") != string::npos) {
 		isBTC = true;
-		snapshotFilename = "snapshotVolTrendBTC";
+		snapshotFilename = "snapshotTrendBTC";
 	} else {
 		isBTC = false;
-		snapshotFilename = "snapshotVolTrendETH";
+		snapshotFilename = "snapshotTrendETH";
 	}
 	if (listTrades)
 		snapshotFilename += "Detailed";
