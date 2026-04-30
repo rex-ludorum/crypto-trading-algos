@@ -43,19 +43,15 @@ using std::ranges::views::cartesian_product;
 using std::cout;
 using std::endl;
 
-#define ONE_HOUR_MICROSECONDS 3600000000
-#define FIFTEEN_MINUTES_MICROSECONDS 900000000
-#define ONE_MINUTE_MICROSECONDS 60000000
-
 #define NUM_WINDOWS 4
-
-#define MAX_TOTAL_TRADES 3189
 
 #define INCREMENT 1000000
 #define TRADE_CHUNK 50000000
 
 #define PERCENTILE_CEILING 30
 #define PERCENTILE_FLOOR 12
+
+#define MAX_TOTAL_TRADES 3189
 
 static size_t newStart = 0;
 static size_t globalIdx = 0;

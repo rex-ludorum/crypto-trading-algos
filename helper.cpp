@@ -25,14 +25,6 @@ using std::cerr;
 using std::cout;
 using std::endl;
 
-#define ONE_YEAR_MICROSECONDS 31536000000000
-
-#define MARCH_1_1972_IN_SECONDS 68256000
-#define DAYS_IN_LEAP_YEAR_CYCLE 1461
-#define SECONDS_IN_DAY 86400
-
-#define RISK_FREE_RATE 1.01
-
 constexpr array<int, 12> daysInMonths = {31, 30, 31, 30, 31, 31,
 																				 30, 31, 30, 31, 31, 28};
 

@@ -8,6 +8,17 @@
 using std::string;
 using std::vector;
 
+#define ONE_HOUR_MICROSECONDS 3600000000
+#define FIFTEEN_MINUTES_MICROSECONDS 900000000
+#define ONE_MINUTE_MICROSECONDS 60000000
+#define ONE_YEAR_MICROSECONDS 31536000000000
+
+#define MARCH_1_1972_IN_SECONDS 68256000
+#define DAYS_IN_LEAP_YEAR_CYCLE 1461
+#define SECONDS_IN_DAY 86400
+
+#define RISK_FREE_RATE 1.01
+
 cl::Device getDefaultDevice(); // Return a device found in this OpenCL platform.
 
 void initializeDevice(
