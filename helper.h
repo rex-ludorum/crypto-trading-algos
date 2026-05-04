@@ -12,6 +12,14 @@ using std::vector;
 #define FIFTEEN_MINUTES_MICROSECONDS 900000000
 #define ONE_MINUTE_MICROSECONDS 60000000
 #define ONE_YEAR_MICROSECONDS 31536000000000
+#define MICROSECONDS_IN_HOUR 3600000000
+#define MICROSECONDS_IN_DAY 86400000000
+#define MICROSECONDS_IN_WEEK 604800000000
+
+#define CME_CLOSE 79200000000
+#define CME_OPEN 82800000000
+#define CME_CLOSE_FRIDAY 165600000000
+#define CME_OPEN_SUNDAY 342000000000
 
 #define MARCH_1_1972_IN_SECONDS 68256000
 #define DAYS_IN_LEAP_YEAR_CYCLE 1461
@@ -29,6 +37,8 @@ vector<string> split(string const &input);
 vector<string> splitByComma(const string &input);
 
 long long getTsOfNextMonth(long long ts);
+
+int isDst(long long ts);
 
 struct trade {
 	int tradeId;

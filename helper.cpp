@@ -164,6 +164,33 @@ long long getTsOfNextMonth(long long ts) {
 				 1000000;
 }
 
+int isDst(long long ts) {
+	int timestamp = ts / 1000000;
+	int days = (timestamp - MARCH_1_1972_IN_SECONDS) / SECONDS_IN_DAY;
+	int daysInCurrentCycle = days % DAYS_IN_LEAP_YEAR_CYCLE;
+	int daysInCurrentYear = daysInCurrentCycle % 365;
+
+	int timeInCurrentDay = timestamp % SECONDS_IN_DAY;
+
+	int marchFirstDayOfWeekInCurrentYear = (days - daysInCurrentYear) % 7;
+
+	int dstStart = 0;
+	if (marchFirstDayOfWeekInCurrentYear > 4) {
+		dstStart = 11 - marchFirstDayOfWeekInCurrentYear + 7;
+	} else {
+		dstStart = 4 - marchFirstDayOfWeekInCurrentYear + 7;
+	}
+	int dstEnd = dstStart + 238;
+
+	if (daysInCurrentYear == dstStart) {
+		return timeInCurrentDay >= 7200;
+	} else if (daysInCurrentYear == dstEnd) {
+		return timeInCurrentDay < 7200;
+	} else {
+		return daysInCurrentYear > dstStart && daysInCurrentYear < dstEnd;
+	}
+}
+
 tradeWithoutDate convertTrade(const trade &orig) {
 	tradeWithoutDate newTrade;
 	// newTrade.tradeId = orig.tradeId;
