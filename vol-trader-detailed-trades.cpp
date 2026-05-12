@@ -199,7 +199,7 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 
 	int indicatorIdx = c.window / FIFTEEN_MINUTES_MICROSECONDS - 1;
 
-	for (size_t i = currIdx; i < currSize; i++) {
+	for (size_t i = currIdx; i < currIdx + currSize; i++) {
 		double price = trades[i].price;
 		double sellVol = inds[i].vols[2 * indicatorIdx];
 		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
@@ -280,7 +280,7 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 
 	int indicatorIdx = c.window / FIFTEEN_MINUTES_MICROSECONDS - 1;
 
-	for (size_t i = currIdx; i < currSize; i++) {
+	for (size_t i = currIdx; i < currIdx + currSize; i++) {
 		double price = trades[i].price;
 		double sellVol = inds[i].vols[2 * indicatorIdx];
 		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
@@ -320,9 +320,8 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 
 #ifdef DEBUG
 				assert(!allTrades[index].empty());
-#endif
+
 				detailedTrade currentTrade = allTrades[index].back();
-#ifdef DEBUG
 				assert(currentTrade.profitMargin == 0);
 				assert(currentTrade.exitTimestamp == 0);
 				assert(currentTrade.entryTimestamp > 0);
