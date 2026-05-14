@@ -175,7 +175,8 @@ void saveSnapshot(size_t index, size_t start, const vector<entry> &entriesVec,
 									vector<drawdownLengths> &drawdownLengthsVec,
 									vector<lossStreaks> &lossStreaksVec,
 									vector<tradeDurations> &tradeDurationsVec,
-									vector<monthlyReturns> &monthlyReturnsVec) {
+									vector<monthlyReturns> &monthlyReturnsVec,
+									vector<wins> &winsVec, vector<losses> &lossesVec) {
 	ofstream file(snapshotFilename, ios::binary);
 	if (!file) {
 		cout << "Error opening snapshot file" << endl;
@@ -198,6 +199,10 @@ void saveSnapshot(size_t index, size_t start, const vector<entry> &entriesVec,
 						 tradeDurationsVec.size() * sizeof(tradeDurations));
 	file.write(reinterpret_cast<const char *>(monthlyReturnsVec.data()),
 						 monthlyReturnsVec.size() * sizeof(monthlyReturns));
+	file.write(reinterpret_cast<const char *>(winsVec.data()),
+						 winsVec.size() * sizeof(wins));
+	file.write(reinterpret_cast<const char *>(lossesVec.data()),
+						 lossesVec.size() * sizeof(losses));
 	file.close();
 }
 
@@ -337,12 +342,14 @@ void processTradesWithOnlineAlgs(
 		const cl::Buffer &tradeRecords, const cl::Buffer &drawdownsBuf,
 		const cl::Buffer &drawdownLengthsBuf, const cl::Buffer &lossStreaksBuf,
 		const cl::Buffer &tradeDurationsBuf, const cl::Buffer &monthlyReturnsBuf,
+		const cl::Buffer &winsBuf, const cl::Buffer &lossesBuf,
 		vector<entry> &entriesVec, vector<tradeRecord> &tradeRecordsVec,
 		vector<drawdowns> &drawdownsVec,
 		vector<drawdownLengths> &drawdownLengthsVec,
 		vector<lossStreaks> &lossStreaksVec,
 		vector<tradeDurations> &tradeDurationsVec,
-		vector<monthlyReturns> &monthlyReturnsVec, bool snapshotting) {
+		vector<monthlyReturns> &monthlyReturnsVec, vector<wins> &winsVec,
+		vector<losses> &lossesVec, bool snapshotting) {
 	size_t currIdx = newStart;
 
 	cl_int err;
@@ -463,6 +470,19 @@ void processTradesWithOnlineAlgs(
 			cout << "Error for enqueueReadBuffer monthlyReturnsBuf: " << err << endl;
 			return;
 		}
+		err = queue.enqueueReadBuffer(
+				winsBuf, CL_FALSE, 0, comboVec.size() * sizeof(winsBuf), &winsVec[0]);
+		if (err != CL_SUCCESS) {
+			cout << "Error for enqueueReadBuffer winsBuf: " << err << endl;
+			return;
+		}
+		err = queue.enqueueReadBuffer(lossesBuf, CL_FALSE, 0,
+																	comboVec.size() * sizeof(lossesBuf),
+																	&lossesVec[0]);
+		if (err != CL_SUCCESS) {
+			cout << "Error for enqueueReadBuffer lossesBuf: " << err << endl;
+			return;
+		}
 		err = queue.finish();
 		if (err != CL_SUCCESS) {
 			cout << "Error for finish: " << err << endl;
@@ -470,7 +490,7 @@ void processTradesWithOnlineAlgs(
 		}
 		saveSnapshot(globalIdx, newStart, entriesVec, tradeRecordsVec, drawdownsVec,
 								 drawdownLengthsVec, lossStreaksVec, tradeDurationsVec,
-								 monthlyReturnsVec);
+								 monthlyReturnsVec, winsVec, lossesVec);
 		auto duration = duration_cast<microseconds>(high_resolution_clock::now() -
 																								beforeSnapshotTime);
 		cout << "Time taken to take snapshot: "
@@ -534,6 +554,7 @@ void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
 									 const vector<drawdownLengths> &drawdownLengthsVec,
 									 const vector<lossStreaks> &lossStreaksVec,
 									 const vector<tradeDurations> &tradeDurationsVec,
+									 const vector<wins> &winsVec, const vector<losses> &lossesVec,
 									 bool listTrades) {
 	os << fixed;
 	os << "Combo index: " << idx << endl;
@@ -563,6 +584,12 @@ void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
 
 	if (listTrades) {
 		os << "Sharpe ratio: " << allPerfMetrics[idx].sharpe << endl;
+		os << "Average win margin: " << winsVec[idx].mean << endl;
+		os << "Win margin standard deviation: "
+			 << winsVec[idx].m2 / (winsVec[idx].n - 1) << endl;
+		os << "Average loss margin: " << lossesVec[idx].mean << endl;
+		os << "Loss margin standard deviation: "
+			 << lossesVec[idx].m2 / (lossesVec[idx].n - 1) << endl;
 		os << "Average drawdown: " << drawdownsVec[idx].mean << endl;
 		os << "Max drawdown: " << drawdownsVec[idx].max << endl;
 		os << "Average loss streak: " << lossStreaksVec[idx].mean << endl;
@@ -842,6 +869,10 @@ int main(int argc, char *argv[]) {
 	cl::Buffer tradeDurationsBuf;
 	vector<monthlyReturns> monthlyReturnsVec;
 	cl::Buffer monthlyReturnsBuf;
+	vector<wins> winsVec;
+	cl::Buffer winsBuf;
+	vector<losses> lossesVec;
+	cl::Buffer lossesBuf;
 
 	vector<cl_int> numTradesInIntervalVec;
 	cl::Buffer numTradesInIntervalBuf;
@@ -881,6 +912,14 @@ int main(int argc, char *argv[]) {
 				monthlyReturnsVec.size() * sizeof(monthlyReturns);
 		cout << "Size of monthly returns: " << monthlyReturnsVecSize << endl;
 
+		winsVec = vector<wins>(comboVec.size(), {0, 0, 0, 0, 1000000});
+		size_t winsVecSize = winsVec.size() * sizeof(wins);
+		cout << "Size of wins: " << winsVecSize << endl;
+
+		lossesVec = vector<losses>(comboVec.size(), {0, 0, 0, 1000000, 0});
+		size_t lossesVecSize = lossesVec.size() * sizeof(losses);
+		cout << "Size of losses: " << lossesVecSize << endl;
+
 		if (snapshotting && snapshotFile.good()) {
 			if (!snapshotFile.read(reinterpret_cast<char *>(drawdownsVec.data()),
 														 comboVec.size() * sizeof(drawdowns))) {
@@ -906,6 +945,16 @@ int main(int argc, char *argv[]) {
 			if (!snapshotFile.read(reinterpret_cast<char *>(monthlyReturnsVec.data()),
 														 comboVec.size() * sizeof(monthlyReturns))) {
 				cout << "Failed to read monthly returns" << endl;
+				return 1;
+			}
+			if (!snapshotFile.read(reinterpret_cast<char *>(winsVec.data()),
+														 comboVec.size() * sizeof(wins))) {
+				cout << "Failed to read wins" << endl;
+				return 1;
+			}
+			if (!snapshotFile.read(reinterpret_cast<char *>(lossesVec.data()),
+														 comboVec.size() * sizeof(losses))) {
+				cout << "Failed to read losses" << endl;
 				return 1;
 			}
 		}
@@ -955,9 +1004,27 @@ int main(int argc, char *argv[]) {
 			cout << "Error for monthlyReturnsBuf: " << err << endl;
 			return 1;
 		}
+
+		winsBuf = cl::Buffer(context,
+												 CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY |
+														 CL_MEM_COPY_HOST_PTR,
+												 comboVec.size() * sizeof(wins), &winsVec[0], &err);
+		if (err != CL_SUCCESS) {
+			cout << "Error for winsBuf: " << err << endl;
+			return 1;
+		}
+
+		lossesBuf = cl::Buffer(
+				context,
+				CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+				comboVec.size() * sizeof(losses), &lossesVec[0], &err);
+		if (err != CL_SUCCESS) {
+			cout << "Error for lossesBuf: " << err << endl;
+			return 1;
+		}
 		totalSize += drawdownsVecSize + drawdownLengthsVecSize +
 								 lossStreaksVecSize + tradeDurationsVecSize +
-								 monthlyReturnsVecSize;
+								 monthlyReturnsVecSize + winsVecSize + lossesVecSize;
 		cout << "Total size: " << totalSize << endl;
 		cout << "Total size: " << (double)totalSize / (double)(1024 * 1024 * 1024)
 				 << " GiB" << endl;
@@ -1036,6 +1103,14 @@ int main(int argc, char *argv[]) {
 		err = volKernel.setArg(10, monthlyReturnsBuf);
 		if (err != CL_SUCCESS) {
 			cout << "Error for volKernel setArg 10: " << err << endl;
+		}
+		err = volKernel.setArg(11, winsBuf);
+		if (err != CL_SUCCESS) {
+			cout << "Error for volKernel setArg 11: " << err << endl;
+		}
+		err = volKernel.setArg(12, lossesBuf);
+		if (err != CL_SUCCESS) {
+			cout << "Error for volKernel setArg 12: " << err << endl;
 		}
 	} else {
 		err = volKernel.setArg(6, numTradesInIntervalBuf);
@@ -1174,10 +1249,10 @@ int main(int argc, char *argv[]) {
 								queue, volKernel, tradesWithoutDates, indicators, tws, comboVec,
 								inputTrades, indicatorBuffer, inputSize, entries, tradeRecords,
 								drawdownsBuf, drawdownLengthsBuf, lossStreaksBuf,
-								tradeDurationsBuf, monthlyReturnsBuf, entriesVec,
-								tradeRecordsVec, drawdownsVec, drawdownLengthsVec,
-								lossStreaksVec, tradeDurationsVec, monthlyReturnsVec,
-								snapshotting);
+								tradeDurationsBuf, monthlyReturnsBuf, winsBuf, lossesBuf,
+								entriesVec, tradeRecordsVec, drawdownsVec, drawdownLengthsVec,
+								lossStreaksVec, tradeDurationsVec, monthlyReturnsVec, winsVec,
+								lossesVec, snapshotting);
 					else
 						maxTradesPerInterval = max(
 								maxTradesPerInterval,
@@ -1229,9 +1304,9 @@ int main(int argc, char *argv[]) {
 						queue, volKernel, tradesWithoutDates, indicators, tws, comboVec,
 						inputTrades, indicatorBuffer, inputSize, entries, tradeRecords,
 						drawdownsBuf, drawdownLengthsBuf, lossStreaksBuf, tradeDurationsBuf,
-						monthlyReturnsBuf, entriesVec, tradeRecordsVec, drawdownsVec,
-						drawdownLengthsVec, lossStreaksVec, tradeDurationsVec,
-						monthlyReturnsVec, snapshotting);
+						monthlyReturnsBuf, winsBuf, lossesBuf, entriesVec, tradeRecordsVec,
+						drawdownsVec, drawdownLengthsVec, lossStreaksVec, tradeDurationsVec,
+						monthlyReturnsVec, winsVec, lossesVec, snapshotting);
 			else
 				maxTradesPerInterval =
 						max(maxTradesPerInterval,
@@ -1291,6 +1366,19 @@ int main(int argc, char *argv[]) {
 			cout << "Error for enqueueReadBuffer monthlyReturnsBuf: " << err << endl;
 			return 1;
 		}
+		err = queue.enqueueReadBuffer(winsBuf, CL_FALSE, 0,
+																	comboVec.size() * sizeof(wins), &winsVec[0]);
+		if (err != CL_SUCCESS) {
+			cout << "Error for enqueueReadBuffer winsBuf: " << err << endl;
+			return 1;
+		}
+		err = queue.enqueueReadBuffer(lossesBuf, CL_FALSE, 0,
+																	comboVec.size() * sizeof(losses),
+																	&lossesVec[0]);
+		if (err != CL_SUCCESS) {
+			cout << "Error for enqueueReadBuffer lossesBuf: " << err << endl;
+			return 1;
+		}
 	}
 
 	err = queue.finish();
@@ -1342,7 +1430,8 @@ int main(int argc, char *argv[]) {
 			outFile << "Max return:" << endl;
 			outputMetrics(outFile, maxElementIdx, comboVec, tradeRecordsVec,
 										allPerfMetrics, drawdownsVec, drawdownLengthsVec,
-										lossStreaksVec, tradeDurationsVec, listTrades);
+										lossStreaksVec, tradeDurationsVec, winsVec, lossesVec,
+										listTrades);
 			outFile << endl;
 
 			maxElementIdx =
@@ -1357,7 +1446,8 @@ int main(int argc, char *argv[]) {
 			outFile << "Best win rate:" << endl;
 			outputMetrics(outFile, maxElementIdx, comboVec, tradeRecordsVec,
 										allPerfMetrics, drawdownsVec, drawdownLengthsVec,
-										lossStreaksVec, tradeDurationsVec, listTrades);
+										lossStreaksVec, tradeDurationsVec, winsVec, lossesVec,
+										listTrades);
 			outFile << endl;
 
 			maxElementIdx =
@@ -1369,7 +1459,8 @@ int main(int argc, char *argv[]) {
 			outFile << "Most trades:" << endl;
 			outputMetrics(outFile, maxElementIdx, comboVec, tradeRecordsVec,
 										allPerfMetrics, drawdownsVec, drawdownLengthsVec,
-										lossStreaksVec, tradeDurationsVec, listTrades);
+										lossStreaksVec, tradeDurationsVec, winsVec, lossesVec,
+										listTrades);
 			outFile << endl;
 
 			if (listTrades) {
@@ -1382,7 +1473,8 @@ int main(int argc, char *argv[]) {
 				outFile << "Best sharpe ratio:" << endl;
 				outputMetrics(outFile, maxElementIdx, comboVec, tradeRecordsVec,
 											allPerfMetrics, drawdownsVec, drawdownLengthsVec,
-											lossStreaksVec, tradeDurationsVec, listTrades);
+											lossStreaksVec, tradeDurationsVec, winsVec, lossesVec,
+											listTrades);
 				outFile << endl;
 
 				maxElementIdx = max_element(drawdownsVec.begin(), drawdownsVec.end(),
@@ -1393,7 +1485,8 @@ int main(int argc, char *argv[]) {
 				outFile << "Smallest average drawdown:" << endl;
 				outputMetrics(outFile, maxElementIdx, comboVec, tradeRecordsVec,
 											allPerfMetrics, drawdownsVec, drawdownLengthsVec,
-											lossStreaksVec, tradeDurationsVec, listTrades);
+											lossStreaksVec, tradeDurationsVec, winsVec, lossesVec,
+											listTrades);
 				outFile << endl;
 
 				maxElementIdx = max_element(drawdownsVec.begin(), drawdownsVec.end(),
@@ -1404,7 +1497,8 @@ int main(int argc, char *argv[]) {
 				outFile << "Smallest max drawdown:" << endl;
 				outputMetrics(outFile, maxElementIdx, comboVec, tradeRecordsVec,
 											allPerfMetrics, drawdownsVec, drawdownLengthsVec,
-											lossStreaksVec, tradeDurationsVec, listTrades);
+											lossStreaksVec, tradeDurationsVec, winsVec, lossesVec,
+											listTrades);
 				outFile << endl;
 
 				maxElementIdx =
@@ -1416,7 +1510,8 @@ int main(int argc, char *argv[]) {
 				outFile << "Shortest average drawdown length:" << endl;
 				outputMetrics(outFile, maxElementIdx, comboVec, tradeRecordsVec,
 											allPerfMetrics, drawdownsVec, drawdownLengthsVec,
-											lossStreaksVec, tradeDurationsVec, listTrades);
+											lossStreaksVec, tradeDurationsVec, winsVec, lossesVec,
+											listTrades);
 				outFile << endl;
 
 				maxElementIdx =
@@ -1428,7 +1523,8 @@ int main(int argc, char *argv[]) {
 				outFile << "Shortest average loss streak:" << endl;
 				outputMetrics(outFile, maxElementIdx, comboVec, tradeRecordsVec,
 											allPerfMetrics, drawdownsVec, drawdownLengthsVec,
-											lossStreaksVec, tradeDurationsVec, listTrades);
+											lossStreaksVec, tradeDurationsVec, winsVec, lossesVec,
+											listTrades);
 				outFile << endl;
 
 				maxElementIdx =
@@ -1440,7 +1536,8 @@ int main(int argc, char *argv[]) {
 				outFile << "Shortest max loss streak:" << endl;
 				outputMetrics(outFile, maxElementIdx, comboVec, tradeRecordsVec,
 											allPerfMetrics, drawdownsVec, drawdownLengthsVec,
-											lossStreaksVec, tradeDurationsVec, listTrades);
+											lossStreaksVec, tradeDurationsVec, winsVec, lossesVec,
+											listTrades);
 				outFile << endl;
 
 				maxElementIdx =
@@ -1452,7 +1549,8 @@ int main(int argc, char *argv[]) {
 				outFile << "Shortest average trade duration:" << endl;
 				outputMetrics(outFile, maxElementIdx, comboVec, tradeRecordsVec,
 											allPerfMetrics, drawdownsVec, drawdownLengthsVec,
-											lossStreaksVec, tradeDurationsVec, listTrades);
+											lossStreaksVec, tradeDurationsVec, winsVec, lossesVec,
+											listTrades);
 				outFile << endl;
 
 				maxElementIdx =
@@ -1464,14 +1562,16 @@ int main(int argc, char *argv[]) {
 				outFile << "Longest average trade duration:" << endl;
 				outputMetrics(outFile, maxElementIdx, comboVec, tradeRecordsVec,
 											allPerfMetrics, drawdownsVec, drawdownLengthsVec,
-											lossStreaksVec, tradeDurationsVec, listTrades);
+											lossStreaksVec, tradeDurationsVec, winsVec, lossesVec,
+											listTrades);
 				outFile << endl;
 			}
 
 			for (size_t i = 0; i < comboVec.size(); i++) {
-				outputMetrics(outFile, i, comboVec, tradeRecordsVec, allPerfMetrics,
-											drawdownsVec, drawdownLengthsVec, lossStreaksVec,
-											tradeDurationsVec, listTrades);
+				outputMetrics(outFile, maxElementIdx, comboVec, tradeRecordsVec,
+											allPerfMetrics, drawdownsVec, drawdownLengthsVec,
+											lossStreaksVec, tradeDurationsVec, winsVec, lossesVec,
+											listTrades);
 				/*
 				if (listTrades) {
 					for (size_t j = 0; j < allTrades[i].size(); j++) {
@@ -1516,7 +1616,7 @@ int main(int argc, char *argv[]) {
 	cout << "Max return:" << endl;
 	outputMetrics(cout, maxElementIdx, comboVec, tradeRecordsVec, allPerfMetrics,
 								drawdownsVec, drawdownLengthsVec, lossStreaksVec,
-								tradeDurationsVec, listTrades);
+								tradeDurationsVec, winsVec, lossesVec, listTrades);
 	cout << endl;
 
 	maxElementIdx = max_element(tradeRecordsVec.begin(), tradeRecordsVec.end(),
@@ -1530,7 +1630,7 @@ int main(int argc, char *argv[]) {
 	cout << "Best win rate:" << endl;
 	outputMetrics(cout, maxElementIdx, comboVec, tradeRecordsVec, allPerfMetrics,
 								drawdownsVec, drawdownLengthsVec, lossStreaksVec,
-								tradeDurationsVec, listTrades);
+								tradeDurationsVec, winsVec, lossesVec, listTrades);
 	cout << endl;
 
 	maxElementIdx =
@@ -1542,7 +1642,7 @@ int main(int argc, char *argv[]) {
 	cout << "Most trades:" << endl;
 	outputMetrics(cout, maxElementIdx, comboVec, tradeRecordsVec, allPerfMetrics,
 								drawdownsVec, drawdownLengthsVec, lossStreaksVec,
-								tradeDurationsVec, listTrades);
+								tradeDurationsVec, winsVec, lossesVec, listTrades);
 	cout << endl;
 
 	if (!listTrades)
@@ -1556,7 +1656,8 @@ int main(int argc, char *argv[]) {
 		cout << "Best sharpe ratio:" << endl;
 		outputMetrics(cout, maxElementIdx, comboVec, tradeRecordsVec,
 									allPerfMetrics, drawdownsVec, drawdownLengthsVec,
-									lossStreaksVec, tradeDurationsVec, listTrades);
+									lossStreaksVec, tradeDurationsVec, winsVec, lossesVec,
+									listTrades);
 		cout << endl;
 
 		maxElementIdx = max_element(drawdownsVec.begin(), drawdownsVec.end(),
@@ -1567,7 +1668,8 @@ int main(int argc, char *argv[]) {
 		cout << "Smallest average drawdown:" << endl;
 		outputMetrics(cout, maxElementIdx, comboVec, tradeRecordsVec,
 									allPerfMetrics, drawdownsVec, drawdownLengthsVec,
-									lossStreaksVec, tradeDurationsVec, listTrades);
+									lossStreaksVec, tradeDurationsVec, winsVec, lossesVec,
+									listTrades);
 		cout << endl;
 
 		maxElementIdx = max_element(drawdownsVec.begin(), drawdownsVec.end(),
@@ -1578,7 +1680,8 @@ int main(int argc, char *argv[]) {
 		cout << "Smallest max drawdown:" << endl;
 		outputMetrics(cout, maxElementIdx, comboVec, tradeRecordsVec,
 									allPerfMetrics, drawdownsVec, drawdownLengthsVec,
-									lossStreaksVec, tradeDurationsVec, listTrades);
+									lossStreaksVec, tradeDurationsVec, winsVec, lossesVec,
+									listTrades);
 		cout << endl;
 
 		maxElementIdx =
@@ -1590,7 +1693,8 @@ int main(int argc, char *argv[]) {
 		cout << "Shortest average drawdown length:" << endl;
 		outputMetrics(cout, maxElementIdx, comboVec, tradeRecordsVec,
 									allPerfMetrics, drawdownsVec, drawdownLengthsVec,
-									lossStreaksVec, tradeDurationsVec, listTrades);
+									lossStreaksVec, tradeDurationsVec, winsVec, lossesVec,
+									listTrades);
 		cout << endl;
 
 		maxElementIdx = min_element(lossStreaksVec.begin(), lossStreaksVec.end(),
@@ -1601,7 +1705,8 @@ int main(int argc, char *argv[]) {
 		cout << "Shortest average loss streak:" << endl;
 		outputMetrics(cout, maxElementIdx, comboVec, tradeRecordsVec,
 									allPerfMetrics, drawdownsVec, drawdownLengthsVec,
-									lossStreaksVec, tradeDurationsVec, listTrades);
+									lossStreaksVec, tradeDurationsVec, winsVec, lossesVec,
+									listTrades);
 		cout << endl;
 
 		maxElementIdx = min_element(lossStreaksVec.begin(), lossStreaksVec.end(),
@@ -1612,7 +1717,8 @@ int main(int argc, char *argv[]) {
 		cout << "Shortest max loss streak:" << endl;
 		outputMetrics(cout, maxElementIdx, comboVec, tradeRecordsVec,
 									allPerfMetrics, drawdownsVec, drawdownLengthsVec,
-									lossStreaksVec, tradeDurationsVec, listTrades);
+									lossStreaksVec, tradeDurationsVec, winsVec, lossesVec,
+									listTrades);
 		cout << endl;
 
 		maxElementIdx =
@@ -1624,7 +1730,8 @@ int main(int argc, char *argv[]) {
 		cout << "Shortest average trade duration:" << endl;
 		outputMetrics(cout, maxElementIdx, comboVec, tradeRecordsVec,
 									allPerfMetrics, drawdownsVec, drawdownLengthsVec,
-									lossStreaksVec, tradeDurationsVec, listTrades);
+									lossStreaksVec, tradeDurationsVec, winsVec, lossesVec,
+									listTrades);
 		cout << endl;
 
 		maxElementIdx =
@@ -1636,7 +1743,8 @@ int main(int argc, char *argv[]) {
 		cout << "Longest average trade duration:" << endl;
 		outputMetrics(cout, maxElementIdx, comboVec, tradeRecordsVec,
 									allPerfMetrics, drawdownsVec, drawdownLengthsVec,
-									lossStreaksVec, tradeDurationsVec, listTrades);
+									lossStreaksVec, tradeDurationsVec, winsVec, lossesVec,
+									listTrades);
 		cout << endl;
 	}
 

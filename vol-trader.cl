@@ -102,6 +102,22 @@ typedef struct __attribute__((packed)) monthlyReturns {
 	long nextMonth;
 } monthlyReturns;
 
+typedef struct __attribute__((packed)) wins {
+	int n;
+	double mean;
+	double m2;
+	double max;
+	double min;
+} wins;
+
+typedef struct __attribute__((packed)) losses {
+	int n;
+	double mean;
+	double m2;
+	double max;
+	double min;
+} losses;
+
 #define MICROSECONDS_IN_HOUR 3600000000
 #define MICROSECONDS_IN_DAY 86400000000
 #define MICROSECONDS_IN_WEEK 604800000000
@@ -543,7 +559,7 @@ __kernel void volTraderWithTradesAndIndicators(__global int* numTrades, __global
 	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
 }
 
-__kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global indicators* inds, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns) {
+__kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global indicators* inds, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
 	combo c = combos[index];
@@ -624,6 +640,12 @@ __kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWit
 						drawdownLengths[index].drawdownStart = microseconds;
 
 					lossStreaks[index].current++;
+
+					losses[index].max = min(profitMargin, losses[index].max);
+					losses[index].min = max(profitMargin, losses[index].min);
+					double oldMean = losses[index].mean;
+					losses[index].mean += (profitMargin - losses[index].mean) / (double) ++losses[index].n;
+					losses[index].m2 += (profitMargin - oldMean) * (profitMargin - losses[index].mean);
 				} else {
 					if (lossStreaks[index].current != 0) {
 						drawdowns[index].max = min(drawdowns[index].max, drawdowns[index].current);
@@ -639,6 +661,12 @@ __kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWit
 						lossStreaks[index].mean += ((double) lossStreaks[index].current - lossStreaks[index].mean) / (double) lossStreaks[index].n;
 						lossStreaks[index].current = 0;
 					}
+
+					wins[index].max = max(profitMargin, wins[index].max);
+					wins[index].min = min(profitMargin, wins[index].min);
+					double oldMean = wins[index].mean;
+					wins[index].mean += (profitMargin - wins[index].mean) / (double) ++wins[index].n;
+					wins[index].m2 += (profitMargin - oldMean) * (profitMargin - wins[index].mean);
 				}
 			}
 		}

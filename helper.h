@@ -103,13 +103,17 @@ struct __attribute__((packed)) monthlyReturns {
 };
 
 struct __attribute__((packed)) wins {
+	cl_int n;
 	cl_double mean;
+	cl_double m2;
 	cl_double max;
 	cl_double min;
 };
 
 struct __attribute__((packed)) losses {
+	cl_int n;
 	cl_double mean;
+	cl_double m2;
 	cl_double max;
 	cl_double min;
 };
