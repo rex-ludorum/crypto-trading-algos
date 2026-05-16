@@ -683,10 +683,10 @@ int main(int argc, char *argv[]) {
 	string symbol(argv[optind]);
 	if (symbol.find("BTC") != string::npos) {
 		isBTC = true;
-		snapshotFilename = "snapshotVolBTC";
+		snapshotFilename = "snapshotVolExitBTC";
 	} else {
 		isBTC = false;
-		snapshotFilename = "snapshotVolETH";
+		snapshotFilename = "snapshotVolExitETH";
 	}
 	if (listTrades)
 		snapshotFilename += "Detailed";
@@ -1458,7 +1458,7 @@ int main(int argc, char *argv[]) {
 	cout << "Time taken to run kernel: " << (double)duration.count() / 1000000
 			 << " seconds" << endl;
 
-	string resultsFilename = "resultsVol";
+	string resultsFilename = "resultsVolExit";
 	if (isBTC)
 		resultsFilename += "BTC";
 	else
