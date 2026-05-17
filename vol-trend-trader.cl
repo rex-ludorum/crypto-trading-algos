@@ -427,11 +427,13 @@ __kernel void volTrendTraderWithOnlineAlgs(__global int* numTrades, __global tra
 				if (e.price == 0.0 && !inClose && !onWeekend && sellVol >= c.sellVolPercentile) {
 					e = (entry) {price, false};
 					ss += 1;
+					tradeDurations[index].entryTimestamp = microseconds;
 				}
 			} else if (price / minPrice >= precomputedLongEntryThreshold) {
 				if (e.price == 0.0 && !inClose && !onWeekend && buyVol >= c.buyVolPercentile) {
 					e = (entry) {price, true};
 					ls += 1;
+					tradeDurations[index].entryTimestamp = microseconds;
 				}
 			}
 		} else {
@@ -442,11 +444,13 @@ __kernel void volTrendTraderWithOnlineAlgs(__global int* numTrades, __global tra
 				if (e.price == 0.0 && !inClose && !onWeekend && buyVol >= c.buyVolPercentile) {
 					e = (entry) {price, true};
 					ls += 1;
+					tradeDurations[index].entryTimestamp = microseconds;
 				}
 			} else if (price / maxPrice <= precomputedShortEntryThreshold) {
 				if (e.price == 0.0 && !inClose && !onWeekend && sellVol >= c.sellVolPercentile) {
 					e = (entry) {price, false};
 					ss += 1;
+					tradeDurations[index].entryTimestamp = microseconds;
 				}
 			}
 		}

@@ -43,7 +43,7 @@ using std::ranges::views::cartesian_product;
 using std::cout;
 using std::endl;
 
-#define NUM_WINDOWS 4
+#define NUM_WINDOWS 16
 
 #define INCREMENT 1000000
 #define TRADE_CHUNK 50000000
