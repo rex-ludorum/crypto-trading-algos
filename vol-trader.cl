@@ -77,6 +77,7 @@ typedef struct __attribute__((packed)) drawdowns {
 typedef struct __attribute__((packed)) drawdownLengths {
 	long max;
 	double mean;
+	double m2;
 	long drawdownStart;
 } drawdownLengths;
 
@@ -84,6 +85,7 @@ typedef struct __attribute__((packed)) lossStreaks {
 	int n;
 	int max;
 	double mean;
+	double m2;
 	int current;
 } lossStreaks;
 
@@ -91,6 +93,7 @@ typedef struct __attribute__((packed)) tradeDurations {
 	int n;
 	long max;
 	double mean;
+	double m2;
 	long entryTimestamp;
 } tradeDurations;
 
@@ -617,7 +620,9 @@ __kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWit
 
 				long newTradeDuration = microseconds - tradeDurations[index].entryTimestamp;
 				tradeDurations[index].max = max(tradeDurations[index].max, newTradeDuration);
+				double oldMean = tradeDurations[index].mean;
 				tradeDurations[index].mean += ((double) newTradeDuration - tradeDurations[index].mean) / (double) ++tradeDurations[index].n;
+				tradeDurations[index].m2 += ((double) newTradeDuration - oldMean) * ((double) newTradeDuration - tradeDurations[index].mean);
 
 				if (monthlyReturns[index].nextMonth == 0)
 					monthlyReturns[index].nextMonth = getTsOfNextMonth(microseconds);
@@ -626,7 +631,7 @@ __kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWit
 					monthlyReturns[index].current *= profitMargin;
 				} else {
 					monthlyReturns[index].nextMonth = getTsOfNextMonth(microseconds);
-					double oldMean = monthlyReturns[index].mean;
+					oldMean = monthlyReturns[index].mean;
 					monthlyReturns[index].mean += (monthlyReturns[index].current - monthlyReturns[index].mean) / (double) ++monthlyReturns[index].n;
 					monthlyReturns[index].m2 += (monthlyReturns[index].current - oldMean) * (monthlyReturns[index].current - monthlyReturns[index].mean);
 					monthlyReturns[index].current = profitMargin;
@@ -643,7 +648,7 @@ __kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWit
 
 					losses[index].max = min(profitMargin, losses[index].max);
 					losses[index].min = max(profitMargin, losses[index].min);
-					double oldMean = losses[index].mean;
+					oldMean = losses[index].mean;
 					losses[index].mean += (profitMargin - losses[index].mean) / (double) ++losses[index].n;
 					losses[index].m2 += (profitMargin - oldMean) * (profitMargin - losses[index].mean);
 				} else {
@@ -654,17 +659,21 @@ __kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWit
 
 						long newDrawdownLength = microseconds - drawdownLengths[index].drawdownStart;
 						drawdownLengths[index].max = max(drawdownLengths[index].max, newDrawdownLength);
+						oldMean = drawdownLengths[index].mean;
 						drawdownLengths[index].mean += ((double) newDrawdownLength - drawdownLengths[index].mean) / (double) lossStreaks[index].n;
+						drawdownLengths[index].m2 += ((double) newDrawdownLength - oldMean) * ((double) newDrawdownLength - drawdownLengths[index].mean);
 						drawdownLengths[index].drawdownStart = 0;
 
 						lossStreaks[index].max = max(lossStreaks[index].max, lossStreaks[index].current);
+						oldMean = lossStreaks[index].mean;
 						lossStreaks[index].mean += ((double) lossStreaks[index].current - lossStreaks[index].mean) / (double) lossStreaks[index].n;
+						lossStreaks[index].m2 += ((double) lossStreaks[index].current - oldMean) * ((double) lossStreaks[index].current - lossStreaks[index].mean);
 						lossStreaks[index].current = 0;
 					}
 
 					wins[index].max = max(profitMargin, wins[index].max);
 					wins[index].min = min(profitMargin, wins[index].min);
-					double oldMean = wins[index].mean;
+					oldMean = wins[index].mean;
 					wins[index].mean += (profitMargin - wins[index].mean) / (double) ++wins[index].n;
 					wins[index].m2 += (profitMargin - oldMean) * (profitMargin - wins[index].mean);
 				}

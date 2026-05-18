@@ -4,6 +4,7 @@
 #include <array>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <ios>
 #include <iostream>
@@ -264,6 +265,7 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 								 vector<lossStreaks> &lossStreaksVec,
 								 vector<tradeDurations> &tradeDurationsVec,
 								 vector<monthlyReturns> &monthlyReturnsVec,
+								 vector<wins> &winsVec, vector<losses> &lossesVec,
 								 vector<vector<detailedTrade>> &allTrades) {
 	double capital = tradeRecords[index].capital;
 	combo c = combos[index];
@@ -335,9 +337,13 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 				tradeDurationsVec[index].max =
 						max((long long)tradeDurationsVec[index].max,
 								(long long)newTradeDuration);
+				double oldMean = tradeDurationsVec[index].mean;
 				tradeDurationsVec[index].mean +=
 						((double)newTradeDuration - tradeDurationsVec[index].mean) /
 						(double)++tradeDurationsVec[index].n;
+				tradeDurationsVec[index].m2 +=
+						((double)newTradeDuration - oldMean) *
+						((double)newTradeDuration - tradeDurationsVec[index].mean);
 
 				if (monthlyReturnsVec[index].nextMonth == 0)
 					monthlyReturnsVec[index].nextMonth = getTsOfNextMonth(microseconds);
@@ -346,7 +352,7 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 					monthlyReturnsVec[index].current *= profitMargin;
 				} else {
 					monthlyReturnsVec[index].nextMonth = getTsOfNextMonth(microseconds);
-					double oldMean = monthlyReturnsVec[index].mean;
+					oldMean = monthlyReturnsVec[index].mean;
 					monthlyReturnsVec[index].mean += (monthlyReturnsVec[index].current -
 																						monthlyReturnsVec[index].mean) /
 																					 (double)++monthlyReturnsVec[index].n;
@@ -379,17 +385,26 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 						drawdownLengthsVec[index].max =
 								max((long long)drawdownLengthsVec[index].max,
 										(long long)newDrawdownLength);
+						oldMean = drawdownLengthsVec[index].mean;
 						drawdownLengthsVec[index].mean +=
 								((double)newDrawdownLength - drawdownLengthsVec[index].mean) /
 								(double)lossStreaksVec[index].n;
+						drawdownLengthsVec[index].m2 +=
+								((double)newDrawdownLength - oldMean) *
+								((double)newDrawdownLength - drawdownLengthsVec[index].mean);
 						drawdownLengthsVec[index].drawdownStart = 0;
 
 						lossStreaksVec[index].max =
 								max(lossStreaksVec[index].max, lossStreaksVec[index].current);
+						oldMean = lossStreaksVec[index].mean;
 						lossStreaksVec[index].mean +=
 								((double)lossStreaksVec[index].current -
 								 lossStreaksVec[index].mean) /
 								(double)lossStreaksVec[index].n;
+						lossStreaksVec[index].m2 +=
+								((double)lossStreaksVec[index].current - oldMean) *
+								((double)lossStreaksVec[index].current -
+								 lossStreaksVec[index].mean);
 						lossStreaksVec[index].current = 0;
 					}
 				}
@@ -496,18 +511,16 @@ int processTradesWithIndicators(vector<tradeWithoutDate> &tradesWithoutDates,
 	return maxTradesPerInterval;
 }
 
-void processTradesWithOnlineAlgs(vector<tradeWithoutDate> &tradesWithoutDates,
-																 vector<indicators> &inds,
-																 vector<timeWindow> &tws,
-																 const vector<combo> &comboVec,
-																 vector<entry> &entriesVec,
-																 vector<tradeRecord> &tradeRecordsVec,
-																 vector<drawdowns> &drawdownsVec,
-																 vector<drawdownLengths> &drawdownLengthsVec,
-																 vector<lossStreaks> &lossStreaksVec,
-																 vector<tradeDurations> &tradeDurationsVec,
-																 vector<monthlyReturns> &monthlyReturnsVec,
-																 vector<vector<detailedTrade>> &allTrades) {
+void processTradesWithOnlineAlgs(
+		vector<tradeWithoutDate> &tradesWithoutDates, vector<indicators> &inds,
+		vector<timeWindow> &tws, const vector<combo> &comboVec,
+		vector<entry> &entriesVec, vector<tradeRecord> &tradeRecordsVec,
+		vector<drawdowns> &drawdownsVec,
+		vector<drawdownLengths> &drawdownLengthsVec,
+		vector<lossStreaks> &lossStreaksVec,
+		vector<tradeDurations> &tradeDurationsVec,
+		vector<monthlyReturns> &monthlyReturnsVec, vector<wins> &winsVec,
+		vector<losses> &lossesVec, vector<vector<detailedTrade>> &allTrades) {
 	size_t currIdx = newStart;
 
 	while (true) {
@@ -521,7 +534,7 @@ void processTradesWithOnlineAlgs(vector<tradeWithoutDate> &tradesWithoutDates,
 			pool.enqueue([=, &tradesWithoutDates, &inds, &comboVec, &entriesVec,
 										&tradeRecordsVec, &drawdownsVec, &drawdownLengthsVec,
 										&lossStreaksVec, &tradeDurationsVec, &monthlyReturnsVec,
-										&allTrades]() {
+										&winsVec, &lossesVec, &allTrades]() {
 				/*
 				{
 					lock_guard<mutex> lock(coutMutex);
@@ -532,7 +545,7 @@ void processTradesWithOnlineAlgs(vector<tradeWithoutDate> &tradesWithoutDates,
 				performWork(i, currIdx, currSize, tradesWithoutDates, inds, comboVec,
 										entriesVec, tradeRecordsVec, drawdownsVec,
 										drawdownLengthsVec, lossStreaksVec, tradeDurationsVec,
-										monthlyReturnsVec, allTrades);
+										monthlyReturnsVec, winsVec, lossesVec, allTrades);
 			});
 		}
 		pool.wait();
@@ -619,6 +632,7 @@ void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
 									 const vector<drawdownLengths> &drawdownLengthsVec,
 									 const vector<lossStreaks> &lossStreaksVec,
 									 const vector<tradeDurations> &tradeDurationsVec,
+									 const vector<wins> &winsVec, const vector<losses> &lossesVec,
 									 const vector<vector<detailedTrade>> &allTrades,
 									 bool listTrades) {
 	os << fixed;
@@ -647,24 +661,39 @@ void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
 
 	if (listTrades) {
 		os << "Sharpe ratio: " << allPerfMetrics[idx].sharpe << endl;
+		os << "Average win margin: " << winsVec[idx].mean << endl;
+		os << "Win margin standard deviation: "
+			 << sqrt(winsVec[idx].m2 / (winsVec[idx].n - 1)) << endl;
+		os << "Average loss margin: " << lossesVec[idx].mean << endl;
+		os << "Loss margin standard deviation: "
+			 << sqrt(lossesVec[idx].m2 / (lossesVec[idx].n - 1)) << endl;
 		os << "Average drawdown: " << drawdownsVec[idx].mean << endl;
 		os << "Max drawdown: " << drawdownsVec[idx].max << endl;
 		os << "Average loss streak: " << lossStreaksVec[idx].mean << endl;
+		os << "Loss streak standard deviation: "
+			 << sqrt(lossStreaksVec[idx].m2 / (lossStreaksVec[idx].n - 1)) << endl;
 		os << "Max loss streak: " << lossStreaksVec[idx].max << endl;
 		os << "Average drawdown length: "
 			 << drawdownLengthsVec[idx].mean / (double)ONE_HOUR_MICROSECONDS
 			 << " hours" << endl;
+		os << "Drawdown length standard deviation: "
+			 << sqrt(drawdownLengthsVec[idx].m2 / (lossStreaksVec[idx].n - 1))
+			 << endl;
 		os << "Max drawdown length: "
 			 << drawdownLengthsVec[idx].max / (double)ONE_HOUR_MICROSECONDS
 			 << " hours" << endl;
 		os << "Average trade duration: "
 			 << tradeDurationsVec[idx].mean / (double)ONE_MINUTE_MICROSECONDS
 			 << " minutes" << endl;
+		os << "Trade duration standard deviation: "
+			 << sqrt(tradeDurationsVec[idx].m2 / (tradeDurationsVec[idx].n - 1))
+			 << endl;
 		os << "Max trade duration: "
 			 << (double)tradeDurationsVec[idx].max / (double)ONE_MINUTE_MICROSECONDS
 			 << " minutes" << endl;
 		if (&os != &cout) {
 			for (size_t j = 0; j < allTrades[idx].size(); j++) {
+				os << endl;
 				detailedTrade e = allTrades[idx][j];
 				if (e.isLong) {
 					os << "Long ";
@@ -680,7 +709,6 @@ void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
 				os << format("{:%Y-%m-%d %H:%M:%S}", tp) << endl;
 				os << "Buy volume: " << e.e.buyVol << endl;
 				os << "Sell volume: " << e.e.sellVol << endl;
-				os << endl;
 			}
 		}
 	}
@@ -865,6 +893,8 @@ int main(int argc, char *argv[]) {
 	vector<lossStreaks> lossStreaksVec;
 	vector<tradeDurations> tradeDurationsVec;
 	vector<monthlyReturns> monthlyReturnsVec;
+	vector<wins> winsVec;
+	vector<losses> lossesVec;
 
 	vector<cl_int> numTradesInIntervalVec;
 
@@ -904,9 +934,17 @@ int main(int argc, char *argv[]) {
 				monthlyReturnsVec.size() * sizeof(monthlyReturns);
 		cout << "Size of monthly returns: " << monthlyReturnsVecSize << endl;
 
+		winsVec = vector<wins>(comboVec.size(), {0, 0, 0, 0, 1000000});
+		size_t winsVecSize = winsVec.size() * sizeof(wins);
+		cout << "Size of wins: " << winsVecSize << endl;
+
+		lossesVec = vector<losses>(comboVec.size(), {0, 0, 0, 1000000, 0});
+		size_t lossesVecSize = lossesVec.size() * sizeof(losses);
+		cout << "Size of losses: " << lossesVecSize << endl;
+
 		totalSize += drawdownsVecSize + drawdownLengthsVecSize +
 								 lossStreaksVecSize + tradeDurationsVecSize +
-								 monthlyReturnsVecSize;
+								 monthlyReturnsVecSize + winsVecSize + lossesVecSize;
 		cout << "Total size: " << totalSize << endl;
 		cout << "Total size: " << (double)totalSize / (double)(1024 * 1024 * 1024)
 				 << " GiB" << endl;
@@ -1040,11 +1078,11 @@ int main(int argc, char *argv[]) {
 						//		queue, volKernel, tradesWithoutDates, indicators, tws,
 						//		comboVec, inputTrades, indicatorBuffer, inputSize,
 						//		entriesAndExitsBuf, allTrades);
-						processTradesWithOnlineAlgs(tradesWithoutDates, indicators, tws,
-																				comboVec, entriesVec, tradeRecordsVec,
-																				drawdownsVec, drawdownLengthsVec,
-																				lossStreaksVec, tradeDurationsVec,
-																				monthlyReturnsVec, allTrades);
+						processTradesWithOnlineAlgs(
+								tradesWithoutDates, indicators, tws, comboVec, entriesVec,
+								tradeRecordsVec, drawdownsVec, drawdownLengthsVec,
+								lossStreaksVec, tradeDurationsVec, monthlyReturnsVec, winsVec,
+								lossesVec, allTrades);
 					else
 						maxTradesPerInterval =
 								max(maxTradesPerInterval,
@@ -1093,7 +1131,8 @@ int main(int argc, char *argv[]) {
 				processTradesWithOnlineAlgs(
 						tradesWithoutDates, indicators, tws, comboVec, entriesVec,
 						tradeRecordsVec, drawdownsVec, drawdownLengthsVec, lossStreaksVec,
-						tradeDurationsVec, monthlyReturnsVec, allTrades);
+						tradeDurationsVec, monthlyReturnsVec, winsVec, lossesVec,
+						allTrades);
 			else
 				maxTradesPerInterval =
 						max(maxTradesPerInterval,
@@ -1144,7 +1183,8 @@ int main(int argc, char *argv[]) {
 			for (size_t i = 0; i < comboVec.size(); i++) {
 				outputMetrics(outFile, i, comboVec, tradeRecordsVec, allPerfMetrics,
 											drawdownsVec, drawdownLengthsVec, lossStreaksVec,
-											tradeDurationsVec, allTrades, listTrades);
+											tradeDurationsVec, winsVec, lossesVec, allTrades,
+											listTrades);
 				outFile << endl;
 			}
 			outFile.close();
@@ -1160,7 +1200,7 @@ int main(int argc, char *argv[]) {
 	for (size_t i = 0; i < comboVec.size(); i++) {
 		outputMetrics(cout, i, comboVec, tradeRecordsVec, allPerfMetrics,
 									drawdownsVec, drawdownLengthsVec, lossStreaksVec,
-									tradeDurationsVec, allTrades, listTrades);
+									tradeDurationsVec, winsVec, lossesVec, allTrades, listTrades);
 		cout << endl;
 	}
 

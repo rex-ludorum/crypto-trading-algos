@@ -3,6 +3,7 @@
 #include <array>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <ios>
 #include <iostream>
@@ -628,23 +629,31 @@ void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
 		os << "Sharpe ratio: " << allPerfMetrics[idx].sharpe << endl;
 		os << "Average win margin: " << winsVec[idx].mean << endl;
 		os << "Win margin standard deviation: "
-			 << winsVec[idx].m2 / (winsVec[idx].n - 1) << endl;
+			 << sqrt(winsVec[idx].m2 / (winsVec[idx].n - 1)) << endl;
 		os << "Average loss margin: " << lossesVec[idx].mean << endl;
 		os << "Loss margin standard deviation: "
-			 << lossesVec[idx].m2 / (lossesVec[idx].n - 1) << endl;
+			 << sqrt(lossesVec[idx].m2 / (lossesVec[idx].n - 1)) << endl;
 		os << "Average drawdown: " << drawdownsVec[idx].mean << endl;
 		os << "Max drawdown: " << drawdownsVec[idx].max << endl;
 		os << "Average loss streak: " << lossStreaksVec[idx].mean << endl;
+		os << "Loss streak standard deviation: "
+			 << sqrt(lossStreaksVec[idx].m2 / (lossStreaksVec[idx].n - 1)) << endl;
 		os << "Max loss streak: " << lossStreaksVec[idx].max << endl;
 		os << "Average drawdown length: "
 			 << drawdownLengthsVec[idx].mean / (double)ONE_HOUR_MICROSECONDS
 			 << " hours" << endl;
+		os << "Drawdown length standard deviation: "
+			 << sqrt(drawdownLengthsVec[idx].m2 / (lossStreaksVec[idx].n - 1))
+			 << endl;
 		os << "Max drawdown length: "
 			 << drawdownLengthsVec[idx].max / (double)ONE_HOUR_MICROSECONDS
 			 << " hours" << endl;
 		os << "Average trade duration: "
 			 << tradeDurationsVec[idx].mean / (double)ONE_MINUTE_MICROSECONDS
 			 << " minutes" << endl;
+		os << "Trade duration standard deviation: "
+			 << sqrt(tradeDurationsVec[idx].m2 / (tradeDurationsVec[idx].n - 1))
+			 << endl;
 		os << "Max trade duration: "
 			 << (double)tradeDurationsVec[idx].max / (double)ONE_MINUTE_MICROSECONDS
 			 << " minutes" << endl;

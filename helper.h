@@ -77,6 +77,7 @@ struct __attribute__((packed)) drawdowns {
 struct __attribute__((packed)) drawdownLengths {
 	cl_long max;
 	cl_double mean;
+	cl_double m2;
 	cl_long drawdownStart;
 };
 
@@ -84,6 +85,7 @@ struct __attribute__((packed)) lossStreaks {
 	cl_int n;
 	cl_int max;
 	cl_double mean;
+	cl_double m2;
 	cl_int current;
 };
 
@@ -91,6 +93,7 @@ struct __attribute__((packed)) tradeDurations {
 	cl_int n;
 	cl_long max;
 	cl_double mean;
+	cl_double m2;
 	cl_long entryTimestamp;
 };
 
