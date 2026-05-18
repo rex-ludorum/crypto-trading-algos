@@ -299,10 +299,6 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 			double profitMargin;
 			if (e.isLong) {
 				profitMargin = price / e.price;
-				{
-					lock_guard<mutex> lock(coutMutex);
-					cout << profitMargin << endl;
-				}
 			} else {
 				profitMargin = 2 - price / e.price;
 			}
@@ -334,7 +330,7 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 
 				e = (entry){0.0, false};
 
-				long newTradeDuration =
+				long long newTradeDuration =
 						microseconds - tradeDurationsVec[index].entryTimestamp;
 				tradeDurationsVec[index].max =
 						max((long long)tradeDurationsVec[index].max,
@@ -378,7 +374,7 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 								(double)++lossStreaksVec[index].n;
 						drawdownsVec[index].current = 1;
 
-						long newDrawdownLength =
+						long long newDrawdownLength =
 								microseconds - drawdownLengthsVec[index].drawdownStart;
 						drawdownLengthsVec[index].max =
 								max((long long)drawdownLengthsVec[index].max,
