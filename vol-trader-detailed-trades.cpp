@@ -240,11 +240,11 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 			}
 		}
 
-		if (e.price == 0.0) {
-			if (buyVol >= c.buyVolPercentile && !inClose && !onWeekend) {
+		if (e.price == 0.0 && !inClose && !onWeekend) {
+			if (buyVol >= c.buyVolPercentile) {
 				e = (entry){price, true};
 				ls += 1;
-			} else if (sellVol >= c.sellVolPercentile && !inClose && !onWeekend) {
+			} else if (sellVol >= c.sellVolPercentile) {
 				e = (entry){price, false};
 				ss += 1;
 			}

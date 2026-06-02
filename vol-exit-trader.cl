@@ -247,11 +247,11 @@ __kernel void volTraderWithIndicators(__global int* numTrades, __global tradeWit
 			}
 		}
 
-		if (e.price == 0.0) {
-			if (buyVol >= c.buyVolPercentile && !inClose && !onWeekend) {
+		if (e.price == 0.0 && !inClose && !onWeekend) {
+			if (buyVol >= c.buyVolPercentile) {
 				e = (entry) {price, true};
 				ls += 1;
-			} else if (sellVol >= c.sellVolPercentile && !inClose && !onWeekend) {
+			} else if (sellVol >= c.sellVolPercentile) {
 				e = (entry) {price, false};
 				ss += 1;
 			}
@@ -303,7 +303,7 @@ __kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWit
 			} else {
 				profitMargin = 2 - price / e.price;
 			}
-			if (inClose || (e.isLong && buyVol <= c.buyVolExitPercentile || !e.isLong && sellVol <= c.sellVolExitPercentile)) {
+			if (inClose || ((e.isLong && buyVol <= c.buyVolExitPercentile) || (!e.isLong && sellVol <= c.sellVolExitPercentile))) {
 				capital *= profitMargin;
 				bool win = profitMargin >= 1.0;
 				if (e.isLong) {
@@ -378,12 +378,12 @@ __kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWit
 			}
 		}
 
-		if (e.price == 0.0) {
-			if (buyVol >= c.buyVolPercentile && !inClose && !onWeekend) {
+		if (e.price == 0.0 && !inClose && !onWeekend) {
+			if (buyVol >= c.buyVolPercentile) {
 				e = (entry) {price, true};
 				ls += 1;
 				tradeDurations[index].entryTimestamp = microseconds;
-			} else if (sellVol >= c.sellVolPercentile && !inClose && !onWeekend) {
+			} else if (sellVol >= c.sellVolPercentile) {
 				e = (entry) {price, false};
 				ss += 1;
 				tradeDurations[index].entryTimestamp = microseconds;
