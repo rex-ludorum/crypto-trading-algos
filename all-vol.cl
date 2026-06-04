@@ -54,9 +54,13 @@ typedef struct __attribute__ ((packed)) entryAndExit {
 } entryAndExit;
 
 typedef struct __attribute__((packed)) drawdowns {
+	int n;
 	double max;
 	double mean;
-	double current;
+	double m2;
+	double currentMax;
+	double currentMin;
+	bool enabled;
 } drawdowns;
 
 typedef struct __attribute__((packed)) drawdownLengths {
@@ -331,11 +335,12 @@ __kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWit
 				}
 
 				if (!win) {
-					drawdowns[index].current *= profitMargin;
-
 					// consider moving start to the trade entry instead of exit
-					if (drawdownLengths[index].drawdownStart == 0)
+					if (!drawdowns[index].enabled)
 						drawdownLengths[index].drawdownStart = microseconds;
+
+					drawdowns[index].enabled = true;
+					drawdowns[index].currentMin = min(capital, drawdowns[index].currentMin);
 
 					lossStreaks[index].current++;
 
@@ -345,18 +350,23 @@ __kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWit
 					losses[index].mean += (profitMargin - losses[index].mean) / (double) ++losses[index].n;
 					losses[index].m2 += (profitMargin - oldMean) * (profitMargin - losses[index].mean);
 				} else {
-					if (lossStreaks[index].current != 0) {
-						drawdowns[index].max = min(drawdowns[index].max, drawdowns[index].current);
-						drawdowns[index].mean += (drawdowns[index].current - drawdowns[index].mean) / (double) ++lossStreaks[index].n;
-						drawdowns[index].current = 1;
+					if (capital > drawdowns[index].currentMax && drawdowns[index].enabled) {
+						double newDrawdown = (drawdowns[index].currentMin - drawdowns[index].currentMax) / drawdowns[index].currentMax;
+						oldMean = drawdowns[index].mean;
+						drawdowns[index].mean += (newDrawdown - drawdowns[index].mean) / (double) ++drawdowns[index].n;
+						drawdowns[index].m2 += (newDrawdown - oldMean) * (newDrawdown - drawdowns[index].mean);
+						drawdowns[index].currentMin = 1000000000;
+						drawdowns[index].enabled = false;
 
 						long newDrawdownLength = microseconds - drawdownLengths[index].drawdownStart;
 						drawdownLengths[index].max = max(drawdownLengths[index].max, newDrawdownLength);
 						oldMean = drawdownLengths[index].mean;
-						drawdownLengths[index].mean += ((double) newDrawdownLength - drawdownLengths[index].mean) / (double) lossStreaks[index].n;
+						drawdownLengths[index].mean += ((double) newDrawdownLength - drawdownLengths[index].mean) / (double) drawdowns[index].n;
 						drawdownLengths[index].m2 += ((double) newDrawdownLength - oldMean) * ((double) newDrawdownLength - drawdownLengths[index].mean);
-						drawdownLengths[index].drawdownStart = 0;
+					}
+					drawdowns[index].currentMax = max(capital, drawdowns[index].currentMax);
 
+					if (lossStreaks[index].current != 0) {
 						lossStreaks[index].max = max(lossStreaks[index].max, lossStreaks[index].current);
 						oldMean = lossStreaks[index].mean;
 						lossStreaks[index].mean += ((double) lossStreaks[index].current - lossStreaks[index].mean) / (double) lossStreaks[index].n;

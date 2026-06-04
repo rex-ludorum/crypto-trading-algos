@@ -27,6 +27,8 @@ using std::vector;
 
 #define RISK_FREE_RATE 1.01
 
+#define STARTING_CAPITAL 100000
+
 cl::Device getDefaultDevice(); // Return a device found in this OpenCL platform.
 
 void initializeDevice(
@@ -69,9 +71,13 @@ struct perfMetrics {
 };
 
 struct __attribute__((packed)) drawdowns {
+	cl_int n;
 	cl_double max;
 	cl_double mean;
-	cl_double current;
+	cl_double m2;
+	cl_double currentMax;
+	cl_double currentMin;
+	cl_uchar enabled;
 };
 
 struct __attribute__((packed)) drawdownLengths {

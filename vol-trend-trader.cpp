@@ -634,6 +634,8 @@ void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
 		os << "Loss margin standard deviation: "
 			 << sqrt(lossesVec[idx].m2 / (lossesVec[idx].n - 1)) << endl;
 		os << "Average drawdown: " << drawdownsVec[idx].mean << endl;
+		os << "Drawdown standard deviation: "
+			 << sqrt(drawdownsVec[idx].m2 / (drawdownsVec[idx].n - 1)) << endl;
 		os << "Max drawdown: " << drawdownsVec[idx].max << endl;
 		os << "Average loss streak: " << lossStreaksVec[idx].mean << endl;
 		os << "Loss streak standard deviation: "
@@ -839,7 +841,8 @@ int main(int argc, char *argv[]) {
 
 	vector<entry> entriesVec(comboVec.size(), {0.0, 0});
 	size_t entriesVecSize = entriesVec.size() * sizeof(entry);
-	vector<tradeRecord> tradeRecordsVec(comboVec.size(), {1.0, 0, 0, 0, 0, 0, 0});
+	vector<tradeRecord> tradeRecordsVec(comboVec.size(),
+																			{STARTING_CAPITAL, 0, 0, 0, 0, 0, 0});
 	size_t tradeRecordsVecSize = tradeRecordsVec.size() * sizeof(tradeRecord);
 
 	ifstream snapshotFile;
@@ -985,7 +988,9 @@ int main(int argc, char *argv[]) {
 										 entriesVecSize + tradeRecordsVecSize +
 										 positionDatasVecSize;
 	if (listTrades) {
-		drawdownsVec = vector<drawdowns>(comboVec.size(), {1.0, 0.0, 1.0});
+		drawdownsVec =
+				vector<drawdowns>(comboVec.size(), {0, STARTING_CAPITAL, 0, 0,
+																						STARTING_CAPITAL, 1000000000, 0});
 		size_t drawdownsVecSize = drawdownsVec.size() * sizeof(drawdowns);
 		cout << "Size of drawdowns: " << drawdownsVecSize << endl;
 
@@ -1506,8 +1511,9 @@ int main(int argc, char *argv[]) {
 	}
 
 	for (size_t i = 0; i < tradeRecordsVec.size(); i++) {
-		tradeRecordsVec[i].capital = capitalToAnnualizedReturn(
-				tradeRecordsVec[i].capital, firstTimestamp, lastTimestamp);
+		tradeRecordsVec[i].capital =
+				capitalToAnnualizedReturn(tradeRecordsVec[i].capital / STARTING_CAPITAL,
+																	firstTimestamp, lastTimestamp);
 	}
 
 	auto afterKernelTime = high_resolution_clock::now();
