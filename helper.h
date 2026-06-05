@@ -29,6 +29,9 @@ using std::vector;
 
 #define STARTING_CAPITAL 100000
 
+#define BTC_MARGIN_RATE 0.026666666
+#define ETH_MARGIN_RATE 0.039145908
+
 cl::Device getDefaultDevice(); // Return a device found in this OpenCL platform.
 
 void initializeDevice(

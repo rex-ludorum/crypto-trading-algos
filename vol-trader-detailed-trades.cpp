@@ -182,7 +182,7 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 								 const vector<tradeWithoutDate> &trades,
 								 const vector<indicators> &inds, const vector<combo> &combos,
 								 vector<entry> &entries, vector<tradeRecord> &tradeRecords,
-								 vector<int> &numTradesInIntervalVec) {
+								 vector<int> &numTradesInIntervalVec, bool futures) {
 	double capital = tradeRecords[index].capital;
 	combo c = combos[index];
 	entry e = entries[index];
@@ -218,7 +218,12 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 		if (e.price != 0.0) {
 			double profitMargin;
 			if (e.isLong) {
-				profitMargin = price / e.price;
+				if (futures) {
+					int contracts = capital / (e.price * BTC_MARGIN_RATE);
+					double profit = contracts * (price - e.price) * 0.1;
+					profitMargin = (capital + profit) / capital;
+				} else
+					profitMargin = price / e.price;
 				if (inClose || profitMargin >= precomputedTarget ||
 						profitMargin <= precomputedStopLoss) {
 					capital *= profitMargin;
@@ -228,7 +233,12 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 					tradesInInterval++;
 				}
 			} else {
-				profitMargin = 2 - price / e.price;
+				if (futures) {
+					int contracts = capital / (e.price * BTC_MARGIN_RATE);
+					double profit = contracts * (e.price - price) * 0.1;
+					profitMargin = (capital + profit) / capital;
+				} else
+					profitMargin = 2 - price / e.price;
 				if (inClose || profitMargin >= precomputedTarget ||
 						profitMargin <= precomputedStopLoss) {
 					capital *= profitMargin;
@@ -266,7 +276,7 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 								 vector<tradeDurations> &tradeDurationsVec,
 								 vector<monthlyReturns> &monthlyReturnsVec,
 								 vector<wins> &winsVec, vector<losses> &lossesVec,
-								 vector<vector<detailedTrade>> &allTrades) {
+								 vector<vector<detailedTrade>> &allTrades, bool futures) {
 	double capital = tradeRecords[index].capital;
 	combo c = combos[index];
 	entry e = entries[index];
@@ -299,10 +309,21 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 
 		if (e.price != 0.0) {
 			double profitMargin;
-			if (e.isLong) {
-				profitMargin = price / e.price;
+			if (futures) {
+				int contracts = capital / (e.price * BTC_MARGIN_RATE);
+				double profit;
+				if (e.isLong) {
+					profit = contracts * (price - e.price) * 0.1;
+				} else {
+					profit = contracts * (e.price - price) * 0.1;
+				}
+				profitMargin = (capital + profit) / capital;
 			} else {
-				profitMargin = 2 - price / e.price;
+				if (e.isLong) {
+					profitMargin = price / e.price;
+				} else {
+					profitMargin = 2 - price / e.price;
+				}
 			}
 			if (inClose || profitMargin >= precomputedTarget ||
 					profitMargin <= precomputedStopLoss) {
@@ -467,13 +488,11 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 	tradeRecords[index] = (tradeRecord){capital, ss, sw, sl, ls, lw, ll};
 }
 
-int processTradesWithIndicators(vector<tradeWithoutDate> &tradesWithoutDates,
-																vector<indicators> &inds,
-																vector<timeWindow> &tws,
-																const vector<combo> &comboVec,
-																vector<entry> &entriesVec,
-																vector<tradeRecord> &tradeRecordsVec,
-																vector<cl_int> &numTradesInIntervalVec) {
+int processTradesWithIndicators(
+		vector<tradeWithoutDate> &tradesWithoutDates, vector<indicators> &inds,
+		vector<timeWindow> &tws, const vector<combo> &comboVec,
+		vector<entry> &entriesVec, vector<tradeRecord> &tradeRecordsVec,
+		vector<cl_int> &numTradesInIntervalVec, bool futures) {
 	size_t currIdx = newStart;
 
 	int maxTradesPerInterval = 0;
@@ -496,7 +515,8 @@ int processTradesWithIndicators(vector<tradeWithoutDate> &tradesWithoutDates,
 				}
 				*/
 				performWork(i, currIdx, currSize, tradesWithoutDates, inds, comboVec,
-										entriesVec, tradeRecordsVec, numTradesInIntervalVec);
+										entriesVec, tradeRecordsVec, numTradesInIntervalVec,
+										futures);
 			});
 		}
 		pool.wait();
@@ -547,7 +567,8 @@ void processTradesWithOnlineAlgs(
 		vector<lossStreaks> &lossStreaksVec,
 		vector<tradeDurations> &tradeDurationsVec,
 		vector<monthlyReturns> &monthlyReturnsVec, vector<wins> &winsVec,
-		vector<losses> &lossesVec, vector<vector<detailedTrade>> &allTrades) {
+		vector<losses> &lossesVec, vector<vector<detailedTrade>> &allTrades,
+		bool futures) {
 	size_t currIdx = newStart;
 
 	while (true) {
@@ -572,7 +593,7 @@ void processTradesWithOnlineAlgs(
 				performWork(i, currIdx, currSize, tradesWithoutDates, inds, comboVec,
 										entriesVec, tradeRecordsVec, drawdownsVec,
 										drawdownLengthsVec, lossStreaksVec, tradeDurationsVec,
-										monthlyReturnsVec, winsVec, lossesVec, allTrades);
+										monthlyReturnsVec, winsVec, lossesVec, allTrades, futures);
 			});
 		}
 		pool.wait();
@@ -745,12 +766,12 @@ void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
 }
 
 int main(int argc, char *argv[]) {
-	bool writeResults = false, listTrades = false;
+	bool writeResults = false, listTrades = false, futures = false;
 
 	bool isBTC;
 
 	int opt;
-	while ((opt = getopt(argc, argv, "wl")) != -1) {
+	while ((opt = getopt(argc, argv, "wlf")) != -1) {
 		switch (opt) {
 		case 'w':
 			writeResults = true;
@@ -759,6 +780,10 @@ int main(int argc, char *argv[]) {
 		case 'l':
 			listTrades = true;
 			cout << "Enabled listing trades" << endl;
+			break;
+		case 'f':
+			futures = true;
+			cout << "Enabled futures" << endl;
 			break;
 		case '?':
 			cout << "Got unknown option: " << (char)optopt << endl;
@@ -1114,17 +1139,17 @@ int main(int argc, char *argv[]) {
 								tradesWithoutDates, indicators, tws, comboVec, entriesVec,
 								tradeRecordsVec, drawdownsVec, drawdownLengthsVec,
 								lossStreaksVec, tradeDurationsVec, monthlyReturnsVec, winsVec,
-								lossesVec, allTrades);
+								lossesVec, allTrades, futures);
 					else
-						maxTradesPerInterval =
-								max(maxTradesPerInterval,
-										// processTrades(queue, volKernel, tradesWithoutDates,
-										// comboVec, 							inputTrades, inputSize,
-										// twBetweenRunData, 							positionDatas,
-										// numTradesInIntervalBuf));
-										processTradesWithIndicators(
-												tradesWithoutDates, indicators, tws, comboVec,
-												entriesVec, tradeRecordsVec, numTradesInIntervalVec));
+						maxTradesPerInterval = max(
+								maxTradesPerInterval,
+								// processTrades(queue, volKernel, tradesWithoutDates,
+								// comboVec, 							inputTrades, inputSize,
+								// twBetweenRunData, 							positionDatas,
+								// numTradesInIntervalBuf));
+								processTradesWithIndicators(
+										tradesWithoutDates, indicators, tws, comboVec, entriesVec,
+										tradeRecordsVec, numTradesInIntervalVec, futures));
 					justProcessed = true;
 				}
 				currIdx++;
@@ -1163,8 +1188,8 @@ int main(int argc, char *argv[]) {
 				processTradesWithOnlineAlgs(
 						tradesWithoutDates, indicators, tws, comboVec, entriesVec,
 						tradeRecordsVec, drawdownsVec, drawdownLengthsVec, lossStreaksVec,
-						tradeDurationsVec, monthlyReturnsVec, winsVec, lossesVec,
-						allTrades);
+						tradeDurationsVec, monthlyReturnsVec, winsVec, lossesVec, allTrades,
+						futures);
 			else
 				maxTradesPerInterval =
 						max(maxTradesPerInterval,
@@ -1173,7 +1198,7 @@ int main(int argc, char *argv[]) {
 								// 							positionDatas, numTradesInIntervalBuf));
 								processTradesWithIndicators(
 										tradesWithoutDates, indicators, tws, comboVec, entriesVec,
-										tradeRecordsVec, numTradesInIntervalVec));
+										tradeRecordsVec, numTradesInIntervalVec, futures));
 		} else
 			cout << "Run was already finished in the snapshot" << endl;
 	}
@@ -1196,6 +1221,8 @@ int main(int argc, char *argv[]) {
 	else
 		resultsFilename += "ETH";
 
+	if (futures)
+		resultsFilename += "Futures";
 	if (listTrades) {
 		resultsFilename += "WithTrades";
 		// analyzePerf(allPerfMetrics, allTrades);

@@ -664,12 +664,13 @@ void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
 }
 
 int main(int argc, char *argv[]) {
-	bool writeResults = false, listTrades = false, snapshotting = false;
+	bool writeResults = false, listTrades = false, snapshotting = false,
+			 futures = false;
 
 	bool isBTC;
 
 	int opt;
-	while ((opt = getopt(argc, argv, "wls")) != -1) {
+	while ((opt = getopt(argc, argv, "wlsf")) != -1) {
 		switch (opt) {
 		case 'w':
 			writeResults = true;
@@ -682,6 +683,10 @@ int main(int argc, char *argv[]) {
 		case 's':
 			snapshotting = true;
 			cout << "Enabled snapshotting" << endl;
+			break;
+		case 'f':
+			futures = true;
+			cout << "Enabled futures" << endl;
 			break;
 		case '?':
 			cout << "Got unknown option: " << (char)optopt << endl;
@@ -723,6 +728,8 @@ int main(int argc, char *argv[]) {
 		isBTC = false;
 		snapshotFilename = "snapshotVolTrendETH";
 	}
+	if (futures)
+		snapshotFilename += "Futures";
 	if (listTrades)
 		snapshotFilename += "Detailed";
 	snapshotFilename += "_";
@@ -898,9 +905,15 @@ int main(int argc, char *argv[]) {
 	if (listTrades) {
 		// kernel = cl::Kernel(program, "volTraderWithTradesAndIndicators",
 		// &err);
-		kernel = cl::Kernel(program, "volTrendTraderWithOnlineAlgs", &err);
+		if (futures)
+			kernel = cl::Kernel(program, "volTrendTraderFuturesWithOnlineAlgs", &err);
+		else
+			kernel = cl::Kernel(program, "volTrendTraderWithOnlineAlgs", &err);
 	} else {
-		kernel = cl::Kernel(program, "volTrendTrader", &err);
+		if (futures)
+			kernel = cl::Kernel(program, "volTrendTraderFuturesWithIndicators", &err);
+		else
+			kernel = cl::Kernel(program, "volTrendTraderWithIndicators", &err);
 	}
 	if (err != CL_SUCCESS) {
 		cout << "Error for creating kernel: " << err << endl;
@@ -1528,6 +1541,8 @@ int main(int argc, char *argv[]) {
 	else
 		resultsFilename += "ETH";
 
+	if (futures)
+		resultsFilename += "Futures";
 	if (listTrades) {
 		resultsFilename += "Detailed";
 		// analyzePerf(allPerfMetrics, allTrades);

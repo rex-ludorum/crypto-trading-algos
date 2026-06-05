@@ -135,6 +135,9 @@ typedef struct __attribute__((packed)) losses {
 #define DAYS_IN_LEAP_YEAR_CYCLE 1461
 #define SECONDS_IN_DAY 86400
 
+#define BTC_MARGIN_RATE 0.026666666
+#define ETH_MARGIN_RATE 0.039145908
+
 __constant int daysInMonths[12] = { 31, 30, 31, 30, 31, 31, 30, 31, 30, 31, 31, 28 };
 
 inline int isDST(long ts) {
@@ -310,6 +313,221 @@ __kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWit
 			if (inClose || ((e.isLong && buyVol <= c.buyVolExitPercentile) || (!e.isLong && sellVol <= c.sellVolExitPercentile))) {
 				capital *= profitMargin;
 				bool win = profitMargin >= 1.0;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
+
+				long newTradeDuration = microseconds - tradeDurations[index].entryTimestamp;
+				tradeDurations[index].max = max(tradeDurations[index].max, newTradeDuration);
+				double oldMean = tradeDurations[index].mean;
+				tradeDurations[index].mean += ((double) newTradeDuration - tradeDurations[index].mean) / (double) ++tradeDurations[index].n;
+				tradeDurations[index].m2 += ((double) newTradeDuration - oldMean) * ((double) newTradeDuration - tradeDurations[index].mean);
+
+				if (monthlyReturns[index].nextMonth == 0)
+					monthlyReturns[index].nextMonth = getTsOfNextMonth(microseconds);
+
+				if (microseconds < monthlyReturns[index].nextMonth) {
+					monthlyReturns[index].current *= profitMargin;
+				} else {
+					monthlyReturns[index].nextMonth = getTsOfNextMonth(microseconds);
+					oldMean = monthlyReturns[index].mean;
+					monthlyReturns[index].mean += (monthlyReturns[index].current - monthlyReturns[index].mean) / (double) ++monthlyReturns[index].n;
+					monthlyReturns[index].m2 += (monthlyReturns[index].current - oldMean) * (monthlyReturns[index].current - monthlyReturns[index].mean);
+					monthlyReturns[index].current = profitMargin;
+				}
+
+				if (!win) {
+					// consider moving start to the trade entry instead of exit
+					if (!drawdowns[index].enabled)
+						drawdownLengths[index].drawdownStart = microseconds;
+
+					drawdowns[index].enabled = true;
+					drawdowns[index].currentMin = min(capital, drawdowns[index].currentMin);
+
+					lossStreaks[index].current++;
+
+					losses[index].max = min(profitMargin, losses[index].max);
+					losses[index].min = max(profitMargin, losses[index].min);
+					oldMean = losses[index].mean;
+					losses[index].mean += (profitMargin - losses[index].mean) / (double) ++losses[index].n;
+					losses[index].m2 += (profitMargin - oldMean) * (profitMargin - losses[index].mean);
+				} else {
+					if (capital > drawdowns[index].currentMax && drawdowns[index].enabled) {
+						double newDrawdown = (drawdowns[index].currentMin - drawdowns[index].currentMax) / drawdowns[index].currentMax;
+						oldMean = drawdowns[index].mean;
+						drawdowns[index].mean += (newDrawdown - drawdowns[index].mean) / (double) ++drawdowns[index].n;
+						drawdowns[index].m2 += (newDrawdown - oldMean) * (newDrawdown - drawdowns[index].mean);
+						drawdowns[index].currentMin = 1000000000;
+						drawdowns[index].enabled = false;
+
+						long newDrawdownLength = microseconds - drawdownLengths[index].drawdownStart;
+						drawdownLengths[index].max = max(drawdownLengths[index].max, newDrawdownLength);
+						oldMean = drawdownLengths[index].mean;
+						drawdownLengths[index].mean += ((double) newDrawdownLength - drawdownLengths[index].mean) / (double) drawdowns[index].n;
+						drawdownLengths[index].m2 += ((double) newDrawdownLength - oldMean) * ((double) newDrawdownLength - drawdownLengths[index].mean);
+					}
+					drawdowns[index].currentMax = max(capital, drawdowns[index].currentMax);
+
+					if (lossStreaks[index].current != 0) {
+						lossStreaks[index].max = max(lossStreaks[index].max, lossStreaks[index].current);
+						oldMean = lossStreaks[index].mean;
+						lossStreaks[index].mean += ((double) lossStreaks[index].current - lossStreaks[index].mean) / (double) lossStreaks[index].n;
+						lossStreaks[index].m2 += ((double) lossStreaks[index].current - oldMean) * ((double) lossStreaks[index].current - lossStreaks[index].mean);
+						lossStreaks[index].current = 0;
+					}
+
+					wins[index].max = max(profitMargin, wins[index].max);
+					wins[index].min = min(profitMargin, wins[index].min);
+					oldMean = wins[index].mean;
+					wins[index].mean += (profitMargin - wins[index].mean) / (double) ++wins[index].n;
+					wins[index].m2 += (profitMargin - oldMean) * (profitMargin - wins[index].mean);
+				}
+			}
+		}
+
+		if (e.price == 0.0 && !inClose && !onWeekend) {
+			if (buyVol >= c.buyVolPercentile) {
+				e = (entry) {price, true};
+				ls += 1;
+				tradeDurations[index].entryTimestamp = microseconds;
+			} else if (sellVol >= c.sellVolPercentile) {
+				e = (entry) {price, false};
+				ss += 1;
+				tradeDurations[index].entryTimestamp = microseconds;
+			}
+		}
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+}
+
+__kernel void volTraderFuturesWithIndicators(__global int* numTrades, __global tradeWithoutDate* trades, __global indicators* inds, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global int* numTradesInInterval) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	combo c = combos[index];
+	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	// printf("%d\n", numTrades);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+	entry e = entries[index];
+
+	int tradesInInterval = 0;
+
+	int indicatorIdx = computeIndicatorIdx(c.window);
+
+	for (int i = 0; i < *numTrades; i++) {
+		double vol = trades[i].qty;
+		double price = trades[i].price;
+		double sellVol = inds[i].vols[2 * indicatorIdx];
+		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profitMargin;
+			int contracts = capital / (e.price * BTC_MARGIN_RATE);
+			if (e.isLong) {
+				double profit = contracts * (price - e.price) * 0.1;
+				profitMargin = (capital + profit) / capital;
+				if (inClose || buyVol <= c.buyVolExitPercentile) {
+					capital += profit;
+					e = (entry) {0.0, false};
+					lw += profit >= 0;
+					ll += profit < 0;
+					tradesInInterval++;
+				}
+			} else {
+				double profit = contracts * (e.price - price) * 0.1;
+				profitMargin = (capital + profit) / capital;
+				if (inClose || sellVol <= c.sellVolExitPercentile) {
+					capital += profit;
+					e = (entry) {0.0, false};
+					sw += profit >= 0;
+					sl += profit < 0;
+					tradesInInterval++;
+				}
+			}
+		}
+
+		if (e.price == 0.0 && !inClose && !onWeekend) {
+			if (buyVol >= c.buyVolPercentile) {
+				e = (entry) {price, true};
+				ls += 1;
+			} else if (sellVol >= c.sellVolPercentile) {
+				e = (entry) {price, false};
+				ss += 1;
+			}
+		}
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+	numTradesInInterval[index] = tradesInInterval;
+}
+
+__kernel void volTraderFuturesWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global indicators* inds, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	combo c = combos[index];
+	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	// printf("%d\n", numTrades);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+	entry e = entries[index];
+
+	int tradesInInterval = 0;
+
+	int indicatorIdx = computeIndicatorIdx(c.window);
+
+	for (int i = 0; i < *numTrades; i++) {
+		double vol = trades[i].qty;
+		double price = trades[i].price;
+		double sellVol = inds[i].vols[2 * indicatorIdx];
+		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profit, profitMargin;
+			int contracts = capital / (e.price * BTC_MARGIN_RATE);
+			if (e.isLong) {
+				profit = contracts * (price - e.price) * 0.1;
+			} else {
+				profit = contracts * (e.price - price) * 0.1;
+			}
+			profitMargin = (capital + profit) / capital;
+			if (inClose || ((e.isLong && buyVol <= c.buyVolExitPercentile) || (!e.isLong && sellVol <= c.sellVolExitPercentile))) {
+				capital += profit;
+				bool win = profit >= 0;
 				if (e.isLong) {
 					lw += win;
 					ll += !win;
