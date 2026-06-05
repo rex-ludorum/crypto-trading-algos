@@ -364,21 +364,37 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 				}
 
 				if (!win) {
-					drawdownsVec[index].current *= profitMargin;
-
 					// consider moving start to the trade entry instead of exit
-					if (drawdownLengthsVec[index].drawdownStart == 0)
+					if (!drawdownsVec[index].enabled)
 						drawdownLengthsVec[index].drawdownStart = microseconds;
 
+					drawdownsVec[index].enabled = true;
+					drawdownsVec[index].currentMin =
+							min(capital, drawdownsVec[index].currentMin);
+
 					lossStreaksVec[index].current++;
+
+					lossesVec[index].max = min(profitMargin, lossesVec[index].max);
+					lossesVec[index].min = max(profitMargin, lossesVec[index].min);
+					oldMean = lossesVec[index].mean;
+					lossesVec[index].mean += (profitMargin - lossesVec[index].mean) /
+																	 (double)++lossesVec[index].n;
+					lossesVec[index].m2 +=
+							(profitMargin - oldMean) * (profitMargin - lossesVec[index].mean);
 				} else {
-					if (lossStreaksVec[index].current != 0) {
-						drawdownsVec[index].max =
-								min(drawdownsVec[index].max, drawdownsVec[index].current);
+					if (capital > drawdownsVec[index].currentMax &&
+							drawdownsVec[index].enabled) {
+						double newDrawdown = (drawdownsVec[index].currentMin -
+																	drawdownsVec[index].currentMax) /
+																 drawdownsVec[index].currentMax;
+						oldMean = drawdownsVec[index].mean;
 						drawdownsVec[index].mean +=
-								(drawdownsVec[index].current - drawdownsVec[index].mean) /
-								(double)++lossStreaksVec[index].n;
-						drawdownsVec[index].current = 1;
+								(newDrawdown - drawdownsVec[index].mean) /
+								(double)++drawdownsVec[index].n;
+						drawdownsVec[index].m2 += (newDrawdown - oldMean) *
+																			(newDrawdown - drawdownsVec[index].mean);
+						drawdownsVec[index].currentMin = 1000000000;
+						drawdownsVec[index].enabled = false;
 
 						long long newDrawdownLength =
 								microseconds - drawdownLengthsVec[index].drawdownStart;
@@ -388,12 +404,15 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 						oldMean = drawdownLengthsVec[index].mean;
 						drawdownLengthsVec[index].mean +=
 								((double)newDrawdownLength - drawdownLengthsVec[index].mean) /
-								(double)lossStreaksVec[index].n;
+								(double)drawdownsVec[index].n;
 						drawdownLengthsVec[index].m2 +=
 								((double)newDrawdownLength - oldMean) *
 								((double)newDrawdownLength - drawdownLengthsVec[index].mean);
-						drawdownLengthsVec[index].drawdownStart = 0;
+					}
+					drawdownsVec[index].currentMax =
+							max(capital, drawdownsVec[index].currentMax);
 
+					if (lossStreaksVec[index].current != 0) {
 						lossStreaksVec[index].max =
 								max(lossStreaksVec[index].max, lossStreaksVec[index].current);
 						oldMean = lossStreaksVec[index].mean;
@@ -407,6 +426,14 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 								 lossStreaksVec[index].mean);
 						lossStreaksVec[index].current = 0;
 					}
+
+					winsVec[index].max = max(profitMargin, winsVec[index].max);
+					winsVec[index].min = min(profitMargin, winsVec[index].min);
+					oldMean = winsVec[index].mean;
+					winsVec[index].mean +=
+							(profitMargin - winsVec[index].mean) / (double)++winsVec[index].n;
+					winsVec[index].m2 +=
+							(profitMargin - oldMean) * (profitMargin - winsVec[index].mean);
 				}
 			}
 		}
@@ -668,6 +695,8 @@ void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
 		os << "Loss margin standard deviation: "
 			 << sqrt(lossesVec[idx].m2 / (lossesVec[idx].n - 1)) << endl;
 		os << "Average drawdown: " << drawdownsVec[idx].mean << endl;
+		os << "Drawdown standard deviation: "
+			 << sqrt(drawdownsVec[idx].m2 / (drawdownsVec[idx].n - 1)) << endl;
 		os << "Max drawdown: " << drawdownsVec[idx].max << endl;
 		os << "Average loss streak: " << lossStreaksVec[idx].mean << endl;
 		os << "Loss streak standard deviation: "
@@ -881,7 +910,8 @@ int main(int argc, char *argv[]) {
 
 	vector<entry> entriesVec(comboVec.size(), {0.0, 0});
 	size_t entriesVecSize = entriesVec.size() * sizeof(entry);
-	vector<tradeRecord> tradeRecordsVec(comboVec.size(), {1.0, 0, 0, 0, 0, 0, 0});
+	vector<tradeRecord> tradeRecordsVec(comboVec.size(),
+																			{STARTING_CAPITAL, 0, 0, 0, 0, 0, 0});
 	size_t tradeRecordsVecSize = tradeRecordsVec.size() * sizeof(tradeRecord);
 
 	int maxTradesPerInterval = 0;
@@ -908,7 +938,9 @@ int main(int argc, char *argv[]) {
 	// 									 entriesVecSize + tradeRecordsVecSize;
 	size_t totalSize = comboVecSize + entriesVecSize + tradeRecordsVecSize;
 	if (listTrades) {
-		drawdownsVec = vector<drawdowns>(comboVec.size(), {1.0, 0.0, 1.0});
+		drawdownsVec =
+				vector<drawdowns>(comboVec.size(), {0, STARTING_CAPITAL, 0, 0,
+																						STARTING_CAPITAL, 1000000000, 0});
 		size_t drawdownsVecSize = drawdownsVec.size() * sizeof(drawdowns);
 		cout << "Size of drawdowns: " << drawdownsVecSize << endl;
 
@@ -1147,8 +1179,9 @@ int main(int argc, char *argv[]) {
 	}
 
 	for (size_t i = 0; i < tradeRecordsVec.size(); i++) {
-		tradeRecordsVec[i].capital = capitalToAnnualizedReturn(
-				tradeRecordsVec[i].capital, firstTimestamp, lastTimestamp);
+		tradeRecordsVec[i].capital =
+				capitalToAnnualizedReturn(tradeRecordsVec[i].capital / STARTING_CAPITAL,
+																	firstTimestamp, lastTimestamp);
 	}
 
 	auto afterKernelTime = high_resolution_clock::now();
