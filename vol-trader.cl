@@ -369,6 +369,7 @@ __kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWit
 					if (capital > drawdowns[index].currentMax && drawdowns[index].enabled) {
 						double newDrawdown = (drawdowns[index].currentMin - drawdowns[index].currentMax) / drawdowns[index].currentMax;
 						oldMean = drawdowns[index].mean;
+						drawdowns[index].max = min(drawdowns[index].max, newDrawdown);
 						drawdowns[index].mean += (newDrawdown - drawdowns[index].mean) / (double) ++drawdowns[index].n;
 						drawdowns[index].m2 += (newDrawdown - oldMean) * (newDrawdown - drawdowns[index].mean);
 						drawdowns[index].currentMin = 1000000000;
@@ -590,6 +591,7 @@ __kernel void volTraderFuturesWithOnlineAlgs(__global int* numTrades, __global t
 					if (capital > drawdowns[index].currentMax && drawdowns[index].enabled) {
 						double newDrawdown = (drawdowns[index].currentMin - drawdowns[index].currentMax) / drawdowns[index].currentMax;
 						oldMean = drawdowns[index].mean;
+						drawdowns[index].max = min(drawdowns[index].max, newDrawdown);
 						drawdowns[index].mean += (newDrawdown - drawdowns[index].mean) / (double) ++drawdowns[index].n;
 						drawdowns[index].m2 += (newDrawdown - oldMean) * (newDrawdown - drawdowns[index].mean);
 						drawdowns[index].currentMin = 1000000000;

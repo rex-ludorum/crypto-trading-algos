@@ -963,9 +963,8 @@ int main(int argc, char *argv[]) {
 	size_t totalSize = comboVecSize + inputTradesSize + indicatorsSize +
 										 entriesVecSize + tradeRecordsVecSize;
 	if (listTrades) {
-		drawdownsVec =
-				vector<drawdowns>(comboVec.size(), {0, STARTING_CAPITAL, 0, 0,
-																						STARTING_CAPITAL, 1000000000, 0});
+		drawdownsVec = vector<drawdowns>(
+				comboVec.size(), {0, 1.0, 0, 0, STARTING_CAPITAL, 1000000000, 0});
 		size_t drawdownsVecSize = drawdownsVec.size() * sizeof(drawdowns);
 		cout << "Size of drawdowns: " << drawdownsVecSize << endl;
 
