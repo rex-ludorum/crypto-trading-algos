@@ -366,7 +366,7 @@ __kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWit
 					if (lossStreaks[index].current != 0) {
 						lossStreaks[index].max = max(lossStreaks[index].max, lossStreaks[index].current);
 						oldMean = lossStreaks[index].mean;
-						lossStreaks[index].mean += ((double) lossStreaks[index].current - lossStreaks[index].mean) / (double) lossStreaks[index].n;
+						lossStreaks[index].mean += ((double) lossStreaks[index].current - lossStreaks[index].mean) / (double) ++lossStreaks[index].n;
 						lossStreaks[index].m2 += ((double) lossStreaks[index].current - oldMean) * ((double) lossStreaks[index].current - lossStreaks[index].mean);
 						lossStreaks[index].current = 0;
 					}
@@ -586,7 +586,7 @@ __kernel void volTraderFuturesWithOnlineAlgs(__global int* numTrades, __global t
 					if (lossStreaks[index].current != 0) {
 						lossStreaks[index].max = max(lossStreaks[index].max, lossStreaks[index].current);
 						oldMean = lossStreaks[index].mean;
-						lossStreaks[index].mean += ((double) lossStreaks[index].current - lossStreaks[index].mean) / (double) lossStreaks[index].n;
+						lossStreaks[index].mean += ((double) lossStreaks[index].current - lossStreaks[index].mean) / (double) ++lossStreaks[index].n;
 						lossStreaks[index].m2 += ((double) lossStreaks[index].current - oldMean) * ((double) lossStreaks[index].current - lossStreaks[index].mean);
 						lossStreaks[index].current = 0;
 					}
