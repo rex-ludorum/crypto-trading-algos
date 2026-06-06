@@ -409,6 +409,7 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 																	drawdownsVec[index].currentMax) /
 																 drawdownsVec[index].currentMax;
 						oldMean = drawdownsVec[index].mean;
+						drawdownsVec[index].max = min(drawdownsVec[index].max, newDrawdown);
 						drawdownsVec[index].mean +=
 								(newDrawdown - drawdownsVec[index].mean) /
 								(double)++drawdownsVec[index].n;
@@ -729,7 +730,7 @@ void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
 		os << "Drawdown length standard deviation: "
 			 << sqrt(drawdownLengthsVec[idx].m2 / (lossStreaksVec[idx].n - 1)) /
 							(double)ONE_HOUR_MICROSECONDS
-			 << endl;
+			 << " hours" << endl;
 		os << "Max drawdown length: "
 			 << drawdownLengthsVec[idx].max / (double)ONE_HOUR_MICROSECONDS
 			 << " hours" << endl;
@@ -739,7 +740,7 @@ void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
 		os << "Trade duration standard deviation: "
 			 << sqrt(tradeDurationsVec[idx].m2 / (tradeDurationsVec[idx].n - 1)) /
 							(double)ONE_MINUTE_MICROSECONDS
-			 << endl;
+			 << " minutes" << endl;
 		os << "Max trade duration: "
 			 << (double)tradeDurationsVec[idx].max / (double)ONE_MINUTE_MICROSECONDS
 			 << " minutes" << endl;
@@ -965,9 +966,8 @@ int main(int argc, char *argv[]) {
 	// 									 entriesVecSize + tradeRecordsVecSize;
 	size_t totalSize = comboVecSize + entriesVecSize + tradeRecordsVecSize;
 	if (listTrades) {
-		drawdownsVec =
-				vector<drawdowns>(comboVec.size(), {0, STARTING_CAPITAL, 0, 0,
-																						STARTING_CAPITAL, 1000000000, 0});
+		drawdownsVec = vector<drawdowns>(
+				comboVec.size(), {0, 1.0, 0, 0, STARTING_CAPITAL, 1000000000, 0});
 		size_t drawdownsVecSize = drawdownsVec.size() * sizeof(drawdowns);
 		cout << "Size of drawdowns: " << drawdownsVecSize << endl;
 

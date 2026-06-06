@@ -723,7 +723,7 @@ void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
 		os << "Drawdown length standard deviation: "
 			 << sqrt(drawdownLengthsVec[idx].m2 / (lossStreaksVec[idx].n - 1)) /
 							(double)ONE_HOUR_MICROSECONDS
-			 << endl;
+			 << " hours" << endl;
 		os << "Max drawdown length: "
 			 << drawdownLengthsVec[idx].max / (double)ONE_HOUR_MICROSECONDS
 			 << " hours" << endl;
@@ -733,7 +733,7 @@ void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
 		os << "Trade duration standard deviation: "
 			 << sqrt(tradeDurationsVec[idx].m2 / (tradeDurationsVec[idx].n - 1)) /
 							(double)ONE_MINUTE_MICROSECONDS
-			 << endl;
+			 << " minutes" << endl;
 		os << "Max trade duration: "
 			 << (double)tradeDurationsVec[idx].max / (double)ONE_MINUTE_MICROSECONDS
 			 << " minutes" << endl;
