@@ -405,9 +405,8 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 				} else {
 					if (capital > drawdownsVec[index].currentMax &&
 							drawdownsVec[index].enabled) {
-						double newDrawdown = (drawdownsVec[index].currentMin -
-																	drawdownsVec[index].currentMax) /
-																 drawdownsVec[index].currentMax;
+						double newDrawdown =
+								drawdownsVec[index].currentMin / drawdownsVec[index].currentMax;
 						oldMean = drawdownsVec[index].mean;
 						drawdownsVec[index].max = min(drawdownsVec[index].max, newDrawdown);
 						drawdownsVec[index].mean +=

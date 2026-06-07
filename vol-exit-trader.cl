@@ -138,6 +138,9 @@ typedef struct __attribute__((packed)) losses {
 #define BTC_MARGIN_RATE 0.026666666
 #define ETH_MARGIN_RATE 0.039145908
 
+#define BTC_COMMISSION_PER_CONTRACT 1.92
+#define ETH_COMMISSION_PER_CONTRACT 0.87
+
 __constant int daysInMonths[12] = { 31, 30, 31, 30, 31, 31, 30, 31, 30, 31, 31, 28 };
 
 inline int isDST(long ts) {
@@ -359,7 +362,7 @@ __kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWit
 					losses[index].m2 += (profitMargin - oldMean) * (profitMargin - losses[index].mean);
 				} else {
 					if (capital > drawdowns[index].currentMax && drawdowns[index].enabled) {
-						double newDrawdown = (drawdowns[index].currentMin - drawdowns[index].currentMax) / drawdowns[index].currentMax;
+						double newDrawdown = drawdowns[index].currentMin / drawdowns[index].currentMax;
 						oldMean = drawdowns[index].mean;
 						drawdowns[index].max = min(drawdowns[index].max, newDrawdown);
 						drawdowns[index].mean += (newDrawdown - drawdowns[index].mean) / (double) ++drawdowns[index].n;
@@ -450,6 +453,7 @@ __kernel void volTraderFuturesWithIndicators(__global int* numTrades, __global t
 				profitMargin = (capital + profit) / capital;
 				if (inClose || buyVol <= c.buyVolExitPercentile) {
 					capital += profit;
+					capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
 					e = (entry) {0.0, false};
 					lw += profit >= 0;
 					ll += profit < 0;
@@ -460,6 +464,7 @@ __kernel void volTraderFuturesWithIndicators(__global int* numTrades, __global t
 				profitMargin = (capital + profit) / capital;
 				if (inClose || sellVol <= c.sellVolExitPercentile) {
 					capital += profit;
+					capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
 					e = (entry) {0.0, false};
 					sw += profit >= 0;
 					sl += profit < 0;
@@ -528,6 +533,7 @@ __kernel void volTraderFuturesWithOnlineAlgs(__global int* numTrades, __global t
 			profitMargin = (capital + profit) / capital;
 			if (inClose || ((e.isLong && buyVol <= c.buyVolExitPercentile) || (!e.isLong && sellVol <= c.sellVolExitPercentile))) {
 				capital += profit;
+				capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
 				bool win = profit >= 0;
 				if (e.isLong) {
 					lw += win;
@@ -575,7 +581,7 @@ __kernel void volTraderFuturesWithOnlineAlgs(__global int* numTrades, __global t
 					losses[index].m2 += (profitMargin - oldMean) * (profitMargin - losses[index].mean);
 				} else {
 					if (capital > drawdowns[index].currentMax && drawdowns[index].enabled) {
-						double newDrawdown = (drawdowns[index].currentMin - drawdowns[index].currentMax) / drawdowns[index].currentMax;
+						double newDrawdown = drawdowns[index].currentMin / drawdowns[index].currentMax;
 						oldMean = drawdowns[index].mean;
 						drawdowns[index].max = min(drawdowns[index].max, newDrawdown);
 						drawdowns[index].mean += (newDrawdown - drawdowns[index].mean) / (double) ++drawdowns[index].n;
