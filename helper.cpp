@@ -212,7 +212,10 @@ string convertTsToDate(long long ts) {
 }
 
 double capitalToAnnualizedReturn(double capital, long long t1, long long t2) {
-	return (pow(capital, ONE_YEAR_MICROSECONDS / (double)(t2 - t1)) - 1) * 100;
+	if (capital < 0)
+		return -100;
+	else
+		return (pow(capital, ONE_YEAR_MICROSECONDS / (double)(t2 - t1)) - 1) * 100;
 }
 
 /*
