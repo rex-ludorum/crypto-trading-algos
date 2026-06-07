@@ -309,8 +309,8 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 
 		if (e.price != 0.0) {
 			double profitMargin;
+			int contracts = capital / (e.price * BTC_MARGIN_RATE);
 			if (futures) {
-				int contracts = capital / (e.price * BTC_MARGIN_RATE);
 				double profit;
 				if (e.isLong) {
 					profit = contracts * (price - e.price) * 0.1;
@@ -328,6 +328,8 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 			if (inClose || profitMargin >= precomputedTarget ||
 					profitMargin <= precomputedStopLoss) {
 				capital *= profitMargin;
+				if (futures)
+					capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
 				bool win = profitMargin >= 1.0;
 				if (e.isLong) {
 					lw += win;

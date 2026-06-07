@@ -32,6 +32,9 @@ using std::vector;
 #define BTC_MARGIN_RATE 0.026666666
 #define ETH_MARGIN_RATE 0.039145908
 
+#define BTC_COMMISSION_PER_CONTRACT 1.92
+#define ETH_COMMISSION_PER_CONTRACT 0.87
+
 cl::Device getDefaultDevice(); // Return a device found in this OpenCL platform.
 
 void initializeDevice(
