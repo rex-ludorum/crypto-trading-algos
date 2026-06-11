@@ -7,7 +7,7 @@ import datetime
 import dateutil
 import argparse
 
-DATABASE_NAME = "coinbase-websocket-data"
+DATABASE_NAME = "coinbase-data-really-fixed"
 
 ACCESS_KEY = "AKIAW3MEECM242BBX6NJ"
 AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")

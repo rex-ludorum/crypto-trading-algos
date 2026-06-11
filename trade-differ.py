@@ -8,23 +8,48 @@ def findDiff(file1, file2):
 		s2 = set()
 		idsNotIn1 = []
 		idsNotIn2 = []
-		for line in f1:
-			if 'time' in line:
-				continue
 
+		f1.readline()
+		line = f1.readline()
+		data = line.split(",")
+		minId1 = int(data[3])
+
+		f2.readline()
+		line = f2.readline()
+		data = line.split(",")
+		minId2 = int(data[3])
+
+		while minId1 < minId2:
+			line = f1.readline()
+			data = line.split(",")
+			minId1 = int(data[3])
+
+		while minId2 < minId1:
+			line = f2.readline()
+			data = line.split(",")
+			minId2 = int(data[3])
+
+		ids1.append(minId1)
+		ids2.append(minId2)
+
+		lastId1 = 1
+		lastId2 = 1
+		for line in f1:
 			data = line.split(",")
 			id = int(data[3])
 			ids1.append(id)
-			s1.add(id)
+			lastId1 = id
 
 		for line in f2:
-			if 'time' in line:
-				continue
-
 			data = line.split(",")
 			id = int(data[3])
 			ids2.append(id)
-			s2.add(id)
+			lastId2 = id
+
+		ids1 = [x for x in ids1 if x <= min(lastId1, lastId2)]
+		ids2 = [x for x in ids2 if x <= min(lastId1, lastId2)]
+		s1.update(ids1)
+		s2.update(ids2)
 
 		for id in ids1:
 			if id not in s2:

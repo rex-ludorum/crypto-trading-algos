@@ -49,7 +49,7 @@ using std::ranges::views::cartesian_product;
 using std::cout;
 using std::endl;
 
-#define NUM_WINDOWS 4
+#define NUM_WINDOWS 16
 
 #define INCREMENT 1000000
 #define TRADE_CHUNK 50000000
@@ -62,7 +62,9 @@ static size_t globalIdx = 0;
 
 mutex coutMutex;
 
-const vector<size_t> indicesToRun = {62134, 53504, 62983};
+// const vector<size_t> indicesToRun = {62134, 53504, 62983};
+// const vector<size_t> indicesToRun = {962240, 473688};
+const vector<size_t> indicesToRun = {962240};
 
 cl::Program program; // The program that will run on the device.
 cl::Context context; // The context which holds the device.
@@ -218,8 +220,8 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 		if (e.price != 0.0) {
 			double profitMargin;
 			if (e.isLong) {
+				int contracts = capital / (e.price * BTC_MARGIN_RATE);
 				if (futures) {
-					int contracts = capital / (e.price * BTC_MARGIN_RATE);
 					double profit = contracts * (price - e.price) * 0.1;
 					profitMargin = (capital + profit) / capital;
 				} else
@@ -227,14 +229,16 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 				if (inClose || profitMargin >= precomputedTarget ||
 						profitMargin <= precomputedStopLoss) {
 					capital *= profitMargin;
+					if (futures)
+						capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
 					e = (entry){0.0, false};
 					lw += profitMargin >= 1.0;
 					ll += profitMargin < 1.0;
 					tradesInInterval++;
 				}
 			} else {
+				int contracts = capital / (e.price * BTC_MARGIN_RATE);
 				if (futures) {
-					int contracts = capital / (e.price * BTC_MARGIN_RATE);
 					double profit = contracts * (e.price - price) * 0.1;
 					profitMargin = (capital + profit) / capital;
 				} else
@@ -242,6 +246,8 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 				if (inClose || profitMargin >= precomputedTarget ||
 						profitMargin <= precomputedStopLoss) {
 					capital *= profitMargin;
+					if (futures)
+						capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
 					e = (entry){0.0, false};
 					sw += profitMargin >= 1.0;
 					sl += profitMargin < 1.0;
