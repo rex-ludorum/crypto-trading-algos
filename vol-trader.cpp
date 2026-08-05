@@ -52,8 +52,6 @@ using std::endl;
 #define PERCENTILE_CEILING 30
 #define PERCENTILE_FLOOR 12
 
-#define MAX_TOTAL_TRADES 3189
-
 static size_t newStart = 0;
 static size_t globalIdx = 0;
 static string snapshotFilename;

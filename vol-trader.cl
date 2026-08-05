@@ -442,6 +442,7 @@ __kernel void volTraderFuturesWithIndicators(__global int* numTrades, __global t
 
 	int indicatorIdx = computeIndicatorIdx(c.window);
 
+	double lastPrice = trades[0].price;
 	for (int i = 0; i < *numTrades; i++) {
 		double vol = trades[i].qty;
 		double price = trades[i].price;
@@ -463,7 +464,10 @@ __kernel void volTraderFuturesWithIndicators(__global int* numTrades, __global t
 				double profit = contracts * (price - e.price) * 0.1;
 				profitMargin = (capital + profit) / capital;
 				if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
-					capital += profit;
+					if (fabs(price - lastPrice) >= 100) {
+						profitMargin = max(min(profitMargin, precomputedTarget), precomputedStopLoss);
+					}
+					capital *= profitMargin;
 					capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
 					e = (entry) {0.0, false};
 					lw += profit >= 0;
@@ -474,7 +478,10 @@ __kernel void volTraderFuturesWithIndicators(__global int* numTrades, __global t
 				double profit = contracts * (e.price - price) * 0.1;
 				profitMargin = (capital + profit) / capital;
 				if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
-					capital += profit;
+					if (fabs(price - lastPrice) >= 100) {
+						profitMargin = max(min(profitMargin, precomputedTarget), precomputedStopLoss);
+					}
+					capital *= profitMargin;
 					capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
 					e = (entry) {0.0, false};
 					sw += profit >= 0;
@@ -493,6 +500,7 @@ __kernel void volTraderFuturesWithIndicators(__global int* numTrades, __global t
 				ss += 1;
 			}
 		}
+		lastPrice = price;
 	}
 
 	entries[index] = e;
@@ -522,6 +530,7 @@ __kernel void volTraderFuturesWithOnlineAlgs(__global int* numTrades, __global t
 
 	int indicatorIdx = computeIndicatorIdx(c.window);
 
+	double lastPrice = trades[0].price;
 	for (int i = 0; i < *numTrades; i++) {
 		double vol = trades[i].qty;
 		double price = trades[i].price;
@@ -546,7 +555,10 @@ __kernel void volTraderFuturesWithOnlineAlgs(__global int* numTrades, __global t
 			}
 			profitMargin = (capital + profit) / capital;
 			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
-				capital += profit;
+				if (fabs(price - lastPrice) >= 100) {
+					profitMargin = max(min(profitMargin, precomputedTarget), precomputedStopLoss);
+				}
+				capital *= profitMargin;
 				capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
 				bool win = profit >= 0;
 				if (e.isLong) {
@@ -639,6 +651,7 @@ __kernel void volTraderFuturesWithOnlineAlgs(__global int* numTrades, __global t
 				tradeDurations[index].entryTimestamp = microseconds;
 			}
 		}
+		lastPrice = price;
 	}
 
 	entries[index] = e;
