@@ -3,9 +3,14 @@
 
 #include <CL/opencl.hpp>
 #include <string>
+#include <variant>
 #include <vector>
 
+using std::array;
+using std::ostream;
 using std::string;
+using std::unordered_map;
+using std::variant;
 using std::vector;
 
 #define ONE_HOUR_MICROSECONDS 3600000000
@@ -35,6 +40,10 @@ using std::vector;
 #define BTC_COMMISSION_PER_CONTRACT 1.92
 #define ETH_COMMISSION_PER_CONTRACT 0.87
 
+#define NUM_WINDOWS 16
+
+#define FUTURES_PRICE_CHANGE_LIMIT 100
+
 cl::Device getDefaultDevice(); // Return a device found in this OpenCL platform.
 
 void initializeDevice(
@@ -47,6 +56,20 @@ vector<string> splitByComma(const string &input);
 long long getTsOfNextMonth(long long ts);
 
 int isDst(long long ts);
+
+enum class Mode {
+	Volume,
+	VolumeDelta,
+	AllVolume,
+	VolumeExit,
+	Trend,
+	VolumeTrend
+};
+
+const unordered_map<string, Mode> modeMap = {
+		{"vol", Mode::Volume},			 {"volDelta", Mode::VolumeDelta},
+		{"allVol", Mode::AllVolume}, {"volExit", Mode::VolumeExit},
+		{"trend", Mode::Trend},			 {"volTrend", Mode::VolumeTrend}};
 
 struct trade {
 	int tradeId;
@@ -66,15 +89,80 @@ struct __attribute__((packed)) tradeWithoutDate {
 
 struct perfMetrics {
 	double sharpe;
-	double avgDrawdown;
-	double maxDrawdown;
-	double avgDrawdownLength;
-	double maxDrawdownLength;
-	double avgLossStreak;
-	int maxLossStreak;
-	double avgTradeDuration;
-	double maxTradeDuration;
 };
+
+struct __attribute__((packed)) indicators {
+	array<cl_double, 2 * NUM_WINDOWS> vols;
+};
+
+struct timeWindow {
+	size_t tradeIdx;
+	long long timestamp;
+};
+
+struct __attribute__((packed)) positionData {
+	cl_double maxPrice;
+	cl_double minPrice;
+	cl_uchar bools;
+};
+
+struct __attribute__((packed)) twMetadata {
+	cl_int twTranslation;
+	cl_int twStart;
+};
+
+struct __attribute__((packed)) comboVol {
+	cl_long window;
+	cl_double buyVolPercentile;
+	cl_double sellVolPercentile;
+	cl_double stopLoss;
+	cl_double target;
+};
+
+struct __attribute__((packed)) comboVolDelta {
+	cl_long window;
+	cl_double buyVolDeltaPercentile;
+	cl_double sellVolDeltaPercentile;
+	cl_double stopLoss;
+	cl_double target;
+};
+
+struct __attribute__((packed)) comboVolExit {
+	cl_long window;
+	cl_double buyVolPercentile;
+	cl_double sellVolPercentile;
+	cl_double buyVolExitPercentile;
+	cl_double sellVolExitPercentile;
+};
+
+struct __attribute__((packed)) comboAllVol {
+	cl_long window;
+	cl_double buyVolPercentile;
+	cl_double sellVolPercentile;
+	cl_double buyVolDeltaPercentile;
+	cl_double sellVolDeltaPercentile;
+	cl_double stopLoss;
+	cl_double target;
+};
+
+struct __attribute__((packed)) comboTrend {
+	cl_double entryThreshold;
+	cl_double stopLoss;
+	cl_double target;
+};
+
+struct __attribute__((packed)) comboVolTrend {
+	cl_long window;
+	cl_double buyVolPercentile;
+	cl_double sellVolPercentile;
+	cl_double entryThreshold;
+	cl_double stopLoss;
+	cl_double target;
+};
+
+using ComboVec =
+		variant<vector<comboVol>, vector<comboVolDelta>, vector<comboVolExit>,
+						vector<comboAllVol>, vector<comboTrend>, vector<comboVolTrend>>;
 
 struct __attribute__((packed)) drawdowns {
 	cl_int n;
@@ -157,5 +245,15 @@ double capitalToAnnualizedReturn(double capital, long long t1, long long t2);
 void analyzePerf(vector<perfMetrics> &allPerfMetrics,
 								 const vector<monthlyReturns> &monthlyReturnsVec,
 								 vector<drawdowns> &drawdownsVec);
+
+void outputMetrics(ostream &os, size_t idx, const ComboVec &comboVec,
+									 const vector<tradeRecord> &tradeRecordsVec,
+									 const vector<perfMetrics> &allPerfMetrics,
+									 const vector<drawdowns> &drawdownsVec,
+									 const vector<drawdownLengths> &drawdownLengthsVec,
+									 const vector<lossStreaks> &lossStreaksVec,
+									 const vector<tradeDurations> &tradeDurationsVec,
+									 const vector<wins> &winsVec, const vector<losses> &lossesVec,
+									 bool listTrades);
 
 #endif

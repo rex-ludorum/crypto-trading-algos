@@ -1,9 +1,3 @@
-#define MAX_TOTAL_TRADES 20618
-
-#define NUM_WINDOWS 16
-
-#define FIFTEEN_MINUTES_MICROSECONDS 900000000
-
 typedef struct __attribute__ ((packed)) tradeWithoutDate {
 	long timestamp;
 	double price;
@@ -11,27 +5,59 @@ typedef struct __attribute__ ((packed)) tradeWithoutDate {
 	uchar isBuyerMaker;
 } tradeWithoutDate;
 
-typedef struct __attribute__ ((packed)) indicators {
-	double vols[2 * NUM_WINDOWS];
-} indicators;
-
-typedef struct __attribute__ ((packed)) combo {
+typedef struct __attribute__ ((packed)) comboVol {
 	long window;
 	double buyVolPercentile;
 	double sellVolPercentile;
 	double stopLoss;
 	double target;
-} combo;
+} comboVol;
+
+typedef struct __attribute__ ((packed)) comboVolDelta {
+	long window;
+	double buyVolDeltaPercentile;
+	double sellVolDeltaPercentile;
+	double stopLoss;
+	double target;
+} comboVolDelta;
+
+typedef struct __attribute__ ((packed)) comboVolExit {
+	long window;
+	double buyVolPercentile;
+	double sellVolPercentile;
+	double buyVolExitPercentile;
+	double sellVolExitPercentile;
+} comboVolExit;
+
+typedef struct __attribute__ ((packed)) comboAllVol {
+	long window;
+	double buyVolPercentile;
+	double sellVolPercentile;
+	double buyVolDeltaPercentile;
+	double sellVolDeltaPercentile;
+	double stopLoss;
+	double target;
+} comboAllVol;
+
+typedef struct __attribute__ ((packed)) comboTrend {
+	double entryThreshold;
+	double stopLoss;
+	double target;
+} comboTrend;
+
+typedef struct __attribute__ ((packed)) comboVolTrend {
+	long window;
+	double buyVolPercentile;
+	double sellVolPercentile;
+	double entryThreshold;
+	double stopLoss;
+	double target;
+} comboVolTrend;
 
 typedef struct __attribute__ ((packed)) entry {
 	double price;
 	bool isLong;
 } entry;
-
-typedef struct __attribute__ ((packed)) timeWindow {
-	int tradeIdx;
-	long timestamp;
-} timeWindow;
 
 typedef struct __attribute__ ((packed)) tradeRecord {
 	double capital;
@@ -44,29 +70,10 @@ typedef struct __attribute__ ((packed)) tradeRecord {
 } tradeRecord;
 
 typedef struct __attribute__ ((packed)) positionData {
-	long timestamp;
-	double buyVol;
-	double sellVol;
-	int tradeIdx;
+	double maxPrice;
+	double minPrice;
+	uchar bools;
 } positionData;
-
-typedef struct __attribute__ ((packed)) twMetadata {
-	int twTranslation;
-	int twStart;
-} twMetadata;
-
-typedef struct __attribute__ ((packed)) entryData {
-	double buyVol;
-	double sellVol;
-} entryData;
-
-typedef struct __attribute__ ((packed)) entryAndExit {
-	double profitMargin;
-	int entryIndex;
-	int exitIndex;
-	entryData e;
-	bool isLong;
-} entryAndExit;
 
 typedef struct __attribute__((packed)) drawdowns {
 	int n;
@@ -125,6 +132,8 @@ typedef struct __attribute__((packed)) losses {
 	double min;
 } losses;
 
+#define INCREASING_BIT 0
+
 #define MICROSECONDS_IN_HOUR 3600000000
 #define MICROSECONDS_IN_DAY 86400000000
 #define MICROSECONDS_IN_WEEK 604800000000
@@ -136,12 +145,21 @@ typedef struct __attribute__((packed)) losses {
 #define MARCH_1_1972_IN_SECONDS 68256000
 #define DAYS_IN_LEAP_YEAR_CYCLE 1461
 #define SECONDS_IN_DAY 86400
+#define FIFTEEN_MINUTES_MICROSECONDS 900000000
 
 #define BTC_MARGIN_RATE 0.026666666
 #define ETH_MARGIN_RATE 0.039145908
 
 #define BTC_COMMISSION_PER_CONTRACT 1.92
 #define ETH_COMMISSION_PER_CONTRACT 0.87
+
+#define NUM_WINDOWS 16
+
+#define FUTURES_PRICE_CHANGE_LIMIT 100
+
+typedef struct __attribute__ ((packed)) indicators {
+	double vols[2 * NUM_WINDOWS];
+} indicators;
 
 __constant int daysInMonths[12] = { 31, 30, 31, 30, 31, 31, 30, 31, 30, 31, 31, 28 };
 
@@ -203,10 +221,79 @@ inline int computeIndicatorIdx(long window) {
 	return window / FIFTEEN_MINUTES_MICROSECONDS - 1;
 }
 
-__kernel void volTraderWithIndicators(__global int* numTrades, __global tradeWithoutDate* trades, __global indicators* inds, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global int* numTradesInInterval) {
+inline void processOnlineAlgs(int index, double capital, long microseconds, double profitMargin, bool win, drawdowns* drawdowns, drawdownLengths* drawdownLengths, lossStreaks* lossStreaks, tradeDurations* tradeDurations, monthlyReturns* monthlyReturns, wins* wins, losses* losses) {
+	long newTradeDuration = microseconds - tradeDurations[index].entryTimestamp;
+	tradeDurations[index].max = max(tradeDurations[index].max, newTradeDuration);
+	double oldMean = tradeDurations[index].mean;
+	tradeDurations[index].mean += ((double) newTradeDuration - tradeDurations[index].mean) / (double) ++tradeDurations[index].n;
+	tradeDurations[index].m2 += ((double) newTradeDuration - oldMean) * ((double) newTradeDuration - tradeDurations[index].mean);
+
+	if (monthlyReturns[index].nextMonth == 0)
+		monthlyReturns[index].nextMonth = getTsOfNextMonth(microseconds);
+
+	if (microseconds < monthlyReturns[index].nextMonth) {
+		monthlyReturns[index].current *= profitMargin;
+	} else {
+		monthlyReturns[index].nextMonth = getTsOfNextMonth(microseconds);
+		oldMean = monthlyReturns[index].mean;
+		monthlyReturns[index].mean += (monthlyReturns[index].current - monthlyReturns[index].mean) / (double) ++monthlyReturns[index].n;
+		monthlyReturns[index].m2 += (monthlyReturns[index].current - oldMean) * (monthlyReturns[index].current - monthlyReturns[index].mean);
+		monthlyReturns[index].current = profitMargin;
+	}
+
+	if (!win) {
+		// consider moving start to the trade entry instead of exit
+		if (!drawdowns[index].enabled)
+			drawdownLengths[index].drawdownStart = microseconds;
+
+		drawdowns[index].enabled = true;
+		drawdowns[index].currentMin = min(capital, drawdowns[index].currentMin);
+
+		lossStreaks[index].current++;
+
+		losses[index].max = min(profitMargin, losses[index].max);
+		losses[index].min = max(profitMargin, losses[index].min);
+		oldMean = losses[index].mean;
+		losses[index].mean += (profitMargin - losses[index].mean) / (double) ++losses[index].n;
+		losses[index].m2 += (profitMargin - oldMean) * (profitMargin - losses[index].mean);
+	} else {
+		if (capital > drawdowns[index].currentMax && drawdowns[index].enabled) {
+			double newDrawdown = drawdowns[index].currentMin / drawdowns[index].currentMax;
+			oldMean = drawdowns[index].mean;
+			drawdowns[index].max = min(drawdowns[index].max, newDrawdown);
+			drawdowns[index].mean += (newDrawdown - drawdowns[index].mean) / (double) ++drawdowns[index].n;
+			drawdowns[index].m2 += (newDrawdown - oldMean) * (newDrawdown - drawdowns[index].mean);
+			drawdowns[index].currentMin = 1000000000;
+			drawdowns[index].enabled = false;
+
+			long newDrawdownLength = microseconds - drawdownLengths[index].drawdownStart;
+			drawdownLengths[index].max = max(drawdownLengths[index].max, newDrawdownLength);
+			oldMean = drawdownLengths[index].mean;
+			drawdownLengths[index].mean += ((double) newDrawdownLength - drawdownLengths[index].mean) / (double) drawdowns[index].n;
+			drawdownLengths[index].m2 += ((double) newDrawdownLength - oldMean) * ((double) newDrawdownLength - drawdownLengths[index].mean);
+		}
+		drawdowns[index].currentMax = max(capital, drawdowns[index].currentMax);
+
+		if (lossStreaks[index].current != 0) {
+			lossStreaks[index].max = max(lossStreaks[index].max, lossStreaks[index].current);
+			oldMean = lossStreaks[index].mean;
+			lossStreaks[index].mean += ((double) lossStreaks[index].current - lossStreaks[index].mean) / (double) ++lossStreaks[index].n;
+			lossStreaks[index].m2 += ((double) lossStreaks[index].current - oldMean) * ((double) lossStreaks[index].current - lossStreaks[index].mean);
+			lossStreaks[index].current = 0;
+		}
+
+		wins[index].max = max(profitMargin, wins[index].max);
+		wins[index].min = min(profitMargin, wins[index].min);
+		oldMean = wins[index].mean;
+		wins[index].mean += (profitMargin - wins[index].mean) / (double) ++wins[index].n;
+		wins[index].m2 += (profitMargin - oldMean) * (profitMargin - wins[index].mean);
+	}
+}
+
+__kernel void volTrader(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVol* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global int* numTradesInInterval) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
-	combo c = combos[index];
+	comboVol c = combos[index];
 	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
 	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
 	// printf("%d\n", numTrades);
@@ -243,22 +330,21 @@ __kernel void volTraderWithIndicators(__global int* numTrades, __global tradeWit
 			double profitMargin;
 			if (e.isLong) {
 				profitMargin = price / e.price;
-				if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
-					capital *= profitMargin;
-					e = (entry) {0.0, false};
-					lw += profitMargin >= 1.0;
-					ll += profitMargin < 1.0;
-					tradesInInterval++;
-				}
 			} else {
 				profitMargin = 2 - price / e.price;
-				if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
-					capital *= profitMargin;
-					e = (entry) {0.0, false};
-					sw += profitMargin >= 1.0;
-					sl += profitMargin < 1.0;
-					tradesInInterval++;
+			}
+			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+				capital *= profitMargin;
+				bool win = profitMargin >= 1.0;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
 				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
 			}
 		}
 
@@ -278,10 +364,10 @@ __kernel void volTraderWithIndicators(__global int* numTrades, __global tradeWit
 	numTradesInInterval[index] = tradesInInterval;
 }
 
-__kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global indicators* inds, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+__kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVol* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
-	combo c = combos[index];
+	comboVol c = combos[index];
 	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
 	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
 	// printf("%d\n", numTrades);
@@ -334,72 +420,7 @@ __kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWit
 				e = (entry) {0.0, false};
 				tradesInInterval++;
 
-				long newTradeDuration = microseconds - tradeDurations[index].entryTimestamp;
-				tradeDurations[index].max = max(tradeDurations[index].max, newTradeDuration);
-				double oldMean = tradeDurations[index].mean;
-				tradeDurations[index].mean += ((double) newTradeDuration - tradeDurations[index].mean) / (double) ++tradeDurations[index].n;
-				tradeDurations[index].m2 += ((double) newTradeDuration - oldMean) * ((double) newTradeDuration - tradeDurations[index].mean);
-
-				if (monthlyReturns[index].nextMonth == 0)
-					monthlyReturns[index].nextMonth = getTsOfNextMonth(microseconds);
-
-				if (microseconds < monthlyReturns[index].nextMonth) {
-					monthlyReturns[index].current *= profitMargin;
-				} else {
-					monthlyReturns[index].nextMonth = getTsOfNextMonth(microseconds);
-					oldMean = monthlyReturns[index].mean;
-					monthlyReturns[index].mean += (monthlyReturns[index].current - monthlyReturns[index].mean) / (double) ++monthlyReturns[index].n;
-					monthlyReturns[index].m2 += (monthlyReturns[index].current - oldMean) * (monthlyReturns[index].current - monthlyReturns[index].mean);
-					monthlyReturns[index].current = profitMargin;
-				}
-
-				if (!win) {
-					// consider moving start to the trade entry instead of exit
-					if (!drawdowns[index].enabled)
-						drawdownLengths[index].drawdownStart = microseconds;
-
-					drawdowns[index].enabled = true;
-					drawdowns[index].currentMin = min(capital, drawdowns[index].currentMin);
-
-					lossStreaks[index].current++;
-
-					losses[index].max = min(profitMargin, losses[index].max);
-					losses[index].min = max(profitMargin, losses[index].min);
-					oldMean = losses[index].mean;
-					losses[index].mean += (profitMargin - losses[index].mean) / (double) ++losses[index].n;
-					losses[index].m2 += (profitMargin - oldMean) * (profitMargin - losses[index].mean);
-				} else {
-					if (capital > drawdowns[index].currentMax && drawdowns[index].enabled) {
-						double newDrawdown = drawdowns[index].currentMin / drawdowns[index].currentMax;
-						oldMean = drawdowns[index].mean;
-						drawdowns[index].max = min(drawdowns[index].max, newDrawdown);
-						drawdowns[index].mean += (newDrawdown - drawdowns[index].mean) / (double) ++drawdowns[index].n;
-						drawdowns[index].m2 += (newDrawdown - oldMean) * (newDrawdown - drawdowns[index].mean);
-						drawdowns[index].currentMin = 1000000000;
-						drawdowns[index].enabled = false;
-
-						long newDrawdownLength = microseconds - drawdownLengths[index].drawdownStart;
-						drawdownLengths[index].max = max(drawdownLengths[index].max, newDrawdownLength);
-						oldMean = drawdownLengths[index].mean;
-						drawdownLengths[index].mean += ((double) newDrawdownLength - drawdownLengths[index].mean) / (double) drawdowns[index].n;
-						drawdownLengths[index].m2 += ((double) newDrawdownLength - oldMean) * ((double) newDrawdownLength - drawdownLengths[index].mean);
-					}
-					drawdowns[index].currentMax = max(capital, drawdowns[index].currentMax);
-
-					if (lossStreaks[index].current != 0) {
-						lossStreaks[index].max = max(lossStreaks[index].max, lossStreaks[index].current);
-						oldMean = lossStreaks[index].mean;
-						lossStreaks[index].mean += ((double) lossStreaks[index].current - lossStreaks[index].mean) / (double) ++lossStreaks[index].n;
-						lossStreaks[index].m2 += ((double) lossStreaks[index].current - oldMean) * ((double) lossStreaks[index].current - lossStreaks[index].mean);
-						lossStreaks[index].current = 0;
-					}
-
-					wins[index].max = max(profitMargin, wins[index].max);
-					wins[index].min = min(profitMargin, wins[index].min);
-					oldMean = wins[index].mean;
-					wins[index].mean += (profitMargin - wins[index].mean) / (double) ++wins[index].n;
-					wins[index].m2 += (profitMargin - oldMean) * (profitMargin - wins[index].mean);
-				}
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
 			}
 		}
 
@@ -420,98 +441,10 @@ __kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWit
 	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
 }
 
-__kernel void volTraderFuturesWithIndicators(__global int* numTrades, __global tradeWithoutDate* trades, __global indicators* inds, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global int* numTradesInInterval) {
+__kernel void volTraderFutures(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVol* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global int* numTradesInInterval) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
-	combo c = combos[index];
-	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
-	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
-	// printf("%d\n", numTrades);
-	int ls = tradeRecords[index].longs;
-	int lw = tradeRecords[index].longWins;
-	int ll = tradeRecords[index].longLosses;
-	int ss = tradeRecords[index].shorts;
-	int sw = tradeRecords[index].shortWins;
-	int sl = tradeRecords[index].shortLosses;
-	entry e = entries[index];
-
-	double precomputedTarget = 1 + c.target * 0.01;
-	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
-
-	int tradesInInterval = 0;
-
-	int indicatorIdx = computeIndicatorIdx(c.window);
-
-	double lastPrice = trades[0].price;
-	for (int i = 0; i < *numTrades; i++) {
-		double vol = trades[i].qty;
-		double price = trades[i].price;
-		double sellVol = inds[i].vols[2 * indicatorIdx];
-		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
-		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
-		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
-		long microseconds = trades[i].timestamp;
-		int isDSTInt = isDST(microseconds);
-		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
-		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
-		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
-		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
-
-		if (e.price != 0.0) {
-			double profitMargin;
-			int contracts = capital / (e.price * BTC_MARGIN_RATE);
-			if (e.isLong) {
-				double profit = contracts * (price - e.price) * 0.1;
-				profitMargin = (capital + profit) / capital;
-				if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
-					if (fabs(price - lastPrice) >= 100) {
-						profitMargin = max(min(profitMargin, precomputedTarget), precomputedStopLoss);
-					}
-					capital *= profitMargin;
-					capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
-					e = (entry) {0.0, false};
-					lw += profit >= 0;
-					ll += profit < 0;
-					tradesInInterval++;
-				}
-			} else {
-				double profit = contracts * (e.price - price) * 0.1;
-				profitMargin = (capital + profit) / capital;
-				if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
-					if (fabs(price - lastPrice) >= 100) {
-						profitMargin = max(min(profitMargin, precomputedTarget), precomputedStopLoss);
-					}
-					capital *= profitMargin;
-					capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
-					e = (entry) {0.0, false};
-					sw += profit >= 0;
-					sl += profit < 0;
-					tradesInInterval++;
-				}
-			}
-		}
-
-		if (e.price == 0.0 && !inClose && !onWeekend) {
-			if (buyVol >= c.buyVolPercentile) {
-				e = (entry) {price, true};
-				ls += 1;
-			} else if (sellVol >= c.sellVolPercentile) {
-				e = (entry) {price, false};
-				ss += 1;
-			}
-		}
-		lastPrice = price;
-	}
-
-	entries[index] = e;
-	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
-	numTradesInInterval[index] = tradesInInterval;
-}
-
-__kernel void volTraderFuturesWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global indicators* inds, __global combo* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
-	int index = get_global_id(0);
-	double capital = tradeRecords[index].capital;
-	combo c = combos[index];
+	comboVol c = combos[index];
 	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
 	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
 	// printf("%d\n", numTrades);
@@ -555,12 +488,94 @@ __kernel void volTraderFuturesWithOnlineAlgs(__global int* numTrades, __global t
 			}
 			profitMargin = (capital + profit) / capital;
 			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
-				if (fabs(price - lastPrice) >= 100) {
+				if (fabs(price - lastPrice) >= FUTURES_PRICE_CHANGE_LIMIT) {
 					profitMargin = max(min(profitMargin, precomputedTarget), precomputedStopLoss);
 				}
 				capital *= profitMargin;
 				capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
-				bool win = profit >= 0;
+				bool win = profitMargin >= 1;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
+			}
+		}
+
+		if (e.price == 0.0 && !inClose && !onWeekend) {
+			if (buyVol >= c.buyVolPercentile) {
+				e = (entry) {price, true};
+				ls += 1;
+			} else if (sellVol >= c.sellVolPercentile) {
+				e = (entry) {price, false};
+				ss += 1;
+			}
+		}
+		lastPrice = price;
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+	numTradesInInterval[index] = tradesInInterval;
+}
+
+__kernel void volTraderFuturesWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVol* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	comboVol c = combos[index];
+	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	// printf("%d\n", numTrades);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+	entry e = entries[index];
+
+	double precomputedTarget = 1 + c.target * 0.01;
+	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
+
+	int tradesInInterval = 0;
+
+	int indicatorIdx = computeIndicatorIdx(c.window);
+
+	double lastPrice = trades[0].price;
+	for (int i = 0; i < *numTrades; i++) {
+		double vol = trades[i].qty;
+		double price = trades[i].price;
+		double sellVol = inds[i].vols[2 * indicatorIdx];
+		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profit, profitMargin;
+			int contracts = capital / (e.price * BTC_MARGIN_RATE);
+			if (e.isLong) {
+				profit = contracts * (price - e.price) * 0.1;
+			} else {
+				profit = contracts * (e.price - price) * 0.1;
+			}
+			profitMargin = (capital + profit) / capital;
+			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+				if (fabs(price - lastPrice) >= FUTURES_PRICE_CHANGE_LIMIT) {
+					profitMargin = max(min(profitMargin, precomputedTarget), precomputedStopLoss);
+				}
+				capital *= profitMargin;
+				capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
+				bool win = profitMargin >= 1;
 				if (e.isLong) {
 					lw += win;
 					ll += !win;
@@ -571,72 +586,7 @@ __kernel void volTraderFuturesWithOnlineAlgs(__global int* numTrades, __global t
 				e = (entry) {0.0, false};
 				tradesInInterval++;
 
-				long newTradeDuration = microseconds - tradeDurations[index].entryTimestamp;
-				tradeDurations[index].max = max(tradeDurations[index].max, newTradeDuration);
-				double oldMean = tradeDurations[index].mean;
-				tradeDurations[index].mean += ((double) newTradeDuration - tradeDurations[index].mean) / (double) ++tradeDurations[index].n;
-				tradeDurations[index].m2 += ((double) newTradeDuration - oldMean) * ((double) newTradeDuration - tradeDurations[index].mean);
-
-				if (monthlyReturns[index].nextMonth == 0)
-					monthlyReturns[index].nextMonth = getTsOfNextMonth(microseconds);
-
-				if (microseconds < monthlyReturns[index].nextMonth) {
-					monthlyReturns[index].current *= profitMargin;
-				} else {
-					monthlyReturns[index].nextMonth = getTsOfNextMonth(microseconds);
-					oldMean = monthlyReturns[index].mean;
-					monthlyReturns[index].mean += (monthlyReturns[index].current - monthlyReturns[index].mean) / (double) ++monthlyReturns[index].n;
-					monthlyReturns[index].m2 += (monthlyReturns[index].current - oldMean) * (monthlyReturns[index].current - monthlyReturns[index].mean);
-					monthlyReturns[index].current = profitMargin;
-				}
-
-				if (!win) {
-					// consider moving start to the trade entry instead of exit
-					if (!drawdowns[index].enabled)
-						drawdownLengths[index].drawdownStart = microseconds;
-
-					drawdowns[index].enabled = true;
-					drawdowns[index].currentMin = min(capital, drawdowns[index].currentMin);
-
-					lossStreaks[index].current++;
-
-					losses[index].max = min(profitMargin, losses[index].max);
-					losses[index].min = max(profitMargin, losses[index].min);
-					oldMean = losses[index].mean;
-					losses[index].mean += (profitMargin - losses[index].mean) / (double) ++losses[index].n;
-					losses[index].m2 += (profitMargin - oldMean) * (profitMargin - losses[index].mean);
-				} else {
-					if (capital > drawdowns[index].currentMax && drawdowns[index].enabled) {
-						double newDrawdown = drawdowns[index].currentMin / drawdowns[index].currentMax;
-						oldMean = drawdowns[index].mean;
-						drawdowns[index].max = min(drawdowns[index].max, newDrawdown);
-						drawdowns[index].mean += (newDrawdown - drawdowns[index].mean) / (double) ++drawdowns[index].n;
-						drawdowns[index].m2 += (newDrawdown - oldMean) * (newDrawdown - drawdowns[index].mean);
-						drawdowns[index].currentMin = 1000000000;
-						drawdowns[index].enabled = false;
-
-						long newDrawdownLength = microseconds - drawdownLengths[index].drawdownStart;
-						drawdownLengths[index].max = max(drawdownLengths[index].max, newDrawdownLength);
-						oldMean = drawdownLengths[index].mean;
-						drawdownLengths[index].mean += ((double) newDrawdownLength - drawdownLengths[index].mean) / (double) drawdowns[index].n;
-						drawdownLengths[index].m2 += ((double) newDrawdownLength - oldMean) * ((double) newDrawdownLength - drawdownLengths[index].mean);
-					}
-					drawdowns[index].currentMax = max(capital, drawdowns[index].currentMax);
-
-					if (lossStreaks[index].current != 0) {
-						lossStreaks[index].max = max(lossStreaks[index].max, lossStreaks[index].current);
-						oldMean = lossStreaks[index].mean;
-						lossStreaks[index].mean += ((double) lossStreaks[index].current - lossStreaks[index].mean) / (double) ++lossStreaks[index].n;
-						lossStreaks[index].m2 += ((double) lossStreaks[index].current - oldMean) * ((double) lossStreaks[index].current - lossStreaks[index].mean);
-						lossStreaks[index].current = 0;
-					}
-
-					wins[index].max = max(profitMargin, wins[index].max);
-					wins[index].min = min(profitMargin, wins[index].min);
-					oldMean = wins[index].mean;
-					wins[index].mean += (profitMargin - wins[index].mean) / (double) ++wins[index].n;
-					wins[index].m2 += (profitMargin - oldMean) * (profitMargin - wins[index].mean);
-				}
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
 			}
 		}
 
@@ -656,4 +606,1814 @@ __kernel void volTraderFuturesWithOnlineAlgs(__global int* numTrades, __global t
 
 	entries[index] = e;
 	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+}
+
+__kernel void volDeltaTrader(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolDelta* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global int* numTradesInInterval) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	comboVolDelta c = combos[index];
+	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	// printf("%d\n", numTrades);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+	entry e = entries[index];
+
+	double precomputedTarget = 1 + c.target * 0.01;
+	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
+
+	int tradesInInterval = 0;
+
+	int indicatorIdx = computeIndicatorIdx(c.window);
+
+	for (int i = 0; i < *numTrades; i++) {
+		double vol = trades[i].qty;
+		double price = trades[i].price;
+		double volDelta = inds[i].vols[indicatorIdx];
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profitMargin;
+			if (e.isLong) {
+				profitMargin = price / e.price;
+			} else {
+				profitMargin = 2 - price / e.price;
+			}
+			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+				capital *= profitMargin;
+				bool win = profitMargin >= 1.0;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
+			}
+		}
+
+		if (e.price == 0.0 && !inClose && !onWeekend) {
+			if (volDelta >= c.buyVolDeltaPercentile) {
+				e = (entry) {price, true};
+				ls += 1;
+			} else if (volDelta <= c.sellVolDeltaPercentile) {
+				e = (entry) {price, false};
+				ss += 1;
+			}
+		}
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+	numTradesInInterval[index] = tradesInInterval;
+}
+
+__kernel void volDeltaTraderWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolDelta* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	comboVolDelta c = combos[index];
+	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	// printf("%d\n", numTrades);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+	entry e = entries[index];
+
+	double precomputedTarget = 1 + c.target * 0.01;
+	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
+
+	int tradesInInterval = 0;
+
+	int indicatorIdx = computeIndicatorIdx(c.window);
+
+	for (int i = 0; i < *numTrades; i++) {
+		double vol = trades[i].qty;
+		double price = trades[i].price;
+		double volDelta = inds[i].vols[indicatorIdx];
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profitMargin;
+			if (e.isLong) {
+				profitMargin = price / e.price;
+			} else {
+				profitMargin = 2 - price / e.price;
+			}
+			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+				capital *= profitMargin;
+				bool win = profitMargin >= 1.0;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
+
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
+			}
+		}
+
+		if (e.price == 0.0 && !inClose && !onWeekend) {
+			if (volDelta >= c.buyVolDeltaPercentile) {
+				e = (entry) {price, true};
+				ls += 1;
+				tradeDurations[index].entryTimestamp = microseconds;
+			} else if (volDelta <= c.sellVolDeltaPercentile) {
+				e = (entry) {price, false};
+				ss += 1;
+				tradeDurations[index].entryTimestamp = microseconds;
+			}
+		}
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+}
+
+__kernel void volDeltaTraderFutures(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolDelta* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global int* numTradesInInterval) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	comboVolDelta c = combos[index];
+	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	// printf("%d\n", numTrades);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+	entry e = entries[index];
+
+	double precomputedTarget = 1 + c.target * 0.01;
+	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
+
+	int tradesInInterval = 0;
+
+	int indicatorIdx = computeIndicatorIdx(c.window);
+
+	double lastPrice = trades[0].price;
+	for (int i = 0; i < *numTrades; i++) {
+		double vol = trades[i].qty;
+		double price = trades[i].price;
+		double volDelta = inds[i].vols[indicatorIdx];
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profit, profitMargin;
+			int contracts = capital / (e.price * BTC_MARGIN_RATE);
+			if (e.isLong) {
+				profit = contracts * (price - e.price) * 0.1;
+			} else {
+				profit = contracts * (e.price - price) * 0.1;
+			}
+			profitMargin = (capital + profit) / capital;
+			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+				if (fabs(price - lastPrice) >= FUTURES_PRICE_CHANGE_LIMIT) {
+					profitMargin = max(min(profitMargin, precomputedTarget), precomputedStopLoss);
+				}
+				capital *= profitMargin;
+				capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
+				bool win = profitMargin >= 1;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
+			}
+		}
+
+		if (e.price == 0.0 && !inClose && !onWeekend) {
+			if (volDelta >= c.buyVolDeltaPercentile) {
+				e = (entry) {price, true};
+				ls += 1;
+			} else if (volDelta <= c.sellVolDeltaPercentile) {
+				e = (entry) {price, false};
+				ss += 1;
+			}
+		}
+		lastPrice = price;
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+	numTradesInInterval[index] = tradesInInterval;
+}
+
+__kernel void volDeltaTraderFuturesWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolDelta* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	comboVolDelta c = combos[index];
+	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	// printf("%d\n", numTrades);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+	entry e = entries[index];
+
+	double precomputedTarget = 1 + c.target * 0.01;
+	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
+
+	int tradesInInterval = 0;
+
+	int indicatorIdx = computeIndicatorIdx(c.window);
+
+	double lastPrice = trades[0].price;
+	for (int i = 0; i < *numTrades; i++) {
+		double vol = trades[i].qty;
+		double price = trades[i].price;
+		double volDelta = inds[i].vols[indicatorIdx];
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profit, profitMargin;
+			int contracts = capital / (e.price * BTC_MARGIN_RATE);
+			if (e.isLong) {
+				profit = contracts * (price - e.price) * 0.1;
+			} else {
+				profit = contracts * (e.price - price) * 0.1;
+			}
+			profitMargin = (capital + profit) / capital;
+			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+				if (fabs(price - lastPrice) >= FUTURES_PRICE_CHANGE_LIMIT) {
+					profitMargin = max(min(profitMargin, precomputedTarget), precomputedStopLoss);
+				}
+				capital *= profitMargin;
+				capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
+				bool win = profitMargin >= 1;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
+
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
+			}
+		}
+
+		if (e.price == 0.0 && !inClose && !onWeekend) {
+			if (volDelta >= c.buyVolDeltaPercentile) {
+				e = (entry) {price, true};
+				ls += 1;
+				tradeDurations[index].entryTimestamp = microseconds;
+			} else if (volDelta <= c.sellVolDeltaPercentile) {
+				e = (entry) {price, false};
+				ss += 1;
+				tradeDurations[index].entryTimestamp = microseconds;
+			}
+		}
+		lastPrice = price;
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+}
+
+__kernel void volExitTrader(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolExit* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global int* numTradesInInterval) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	comboVolExit c = combos[index];
+	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	// printf("%d\n", numTrades);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+	entry e = entries[index];
+
+	int tradesInInterval = 0;
+
+	int indicatorIdx = computeIndicatorIdx(c.window);
+
+	for (int i = 0; i < *numTrades; i++) {
+		double vol = trades[i].qty;
+		double price = trades[i].price;
+		double sellVol = inds[i].vols[2 * indicatorIdx];
+		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profitMargin;
+			if (e.isLong) {
+				profitMargin = price / e.price;
+			} else {
+				profitMargin = 2 - price / e.price;
+			}
+			if (inClose || ((e.isLong && buyVol <= c.buyVolExitPercentile) || (!e.isLong && sellVol <= c.sellVolExitPercentile))) {
+				capital *= profitMargin;
+				bool win = profitMargin >= 1.0;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
+			}
+		}
+
+		if (e.price == 0.0 && !inClose && !onWeekend) {
+			if (buyVol >= c.buyVolPercentile) {
+				e = (entry) {price, true};
+				ls += 1;
+			} else if (sellVol >= c.sellVolPercentile) {
+				e = (entry) {price, false};
+				ss += 1;
+			}
+		}
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+	numTradesInInterval[index] = tradesInInterval;
+}
+
+__kernel void volExitTraderWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolExit* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	comboVolExit c = combos[index];
+	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	// printf("%d\n", numTrades);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+	entry e = entries[index];
+
+	int tradesInInterval = 0;
+
+	int indicatorIdx = computeIndicatorIdx(c.window);
+
+	for (int i = 0; i < *numTrades; i++) {
+		double vol = trades[i].qty;
+		double price = trades[i].price;
+		double sellVol = inds[i].vols[2 * indicatorIdx];
+		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profitMargin;
+			if (e.isLong) {
+				profitMargin = price / e.price;
+			} else {
+				profitMargin = 2 - price / e.price;
+			}
+			if (inClose || ((e.isLong && buyVol <= c.buyVolExitPercentile) || (!e.isLong && sellVol <= c.sellVolExitPercentile))) {
+				capital *= profitMargin;
+				bool win = profitMargin >= 1.0;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
+
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
+			}
+		}
+
+		if (e.price == 0.0 && !inClose && !onWeekend) {
+			if (buyVol >= c.buyVolPercentile) {
+				e = (entry) {price, true};
+				ls += 1;
+				tradeDurations[index].entryTimestamp = microseconds;
+			} else if (sellVol >= c.sellVolPercentile) {
+				e = (entry) {price, false};
+				ss += 1;
+				tradeDurations[index].entryTimestamp = microseconds;
+			}
+		}
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+}
+
+__kernel void volExitTraderFutures(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolExit* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global int* numTradesInInterval) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	comboVolExit c = combos[index];
+	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	// printf("%d\n", numTrades);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+	entry e = entries[index];
+
+	int tradesInInterval = 0;
+
+	int indicatorIdx = computeIndicatorIdx(c.window);
+
+	double lastPrice = trades[0].price;
+	for (int i = 0; i < *numTrades; i++) {
+		double vol = trades[i].qty;
+		double price = trades[i].price;
+		double sellVol = inds[i].vols[2 * indicatorIdx];
+		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profit, profitMargin;
+			int contracts = capital / (e.price * BTC_MARGIN_RATE);
+			if (e.isLong) {
+				profit = contracts * (price - e.price) * 0.1;
+			} else {
+				profit = contracts * (e.price - price) * 0.1;
+			}
+			profitMargin = (capital + profit) / capital;
+			if (inClose || ((e.isLong && buyVol <= c.buyVolExitPercentile) || (!e.isLong && sellVol <= c.sellVolExitPercentile))) {
+				/*
+				if (fabs(price - lastPrice) >= FUTURES_PRICE_CHANGE_LIMIT) {
+					profitMargin = max(min(profitMargin, precomputedTarget), precomputedStopLoss);
+				}
+				*/
+				capital *= profitMargin;
+				capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
+				bool win = profitMargin >= 1;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
+			}
+		}
+
+		if (e.price == 0.0 && !inClose && !onWeekend) {
+			if (buyVol >= c.buyVolPercentile) {
+				e = (entry) {price, true};
+				ls += 1;
+			} else if (sellVol >= c.sellVolPercentile) {
+				e = (entry) {price, false};
+				ss += 1;
+			}
+		}
+		lastPrice = price;
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+	numTradesInInterval[index] = tradesInInterval;
+}
+
+__kernel void volExitTraderFuturesWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolExit* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	comboVolExit c = combos[index];
+	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	// printf("%d\n", numTrades);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+	entry e = entries[index];
+
+	int tradesInInterval = 0;
+
+	int indicatorIdx = computeIndicatorIdx(c.window);
+
+	double lastPrice = trades[0].price;
+	for (int i = 0; i < *numTrades; i++) {
+		double vol = trades[i].qty;
+		double price = trades[i].price;
+		double sellVol = inds[i].vols[2 * indicatorIdx];
+		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profit, profitMargin;
+			int contracts = capital / (e.price * BTC_MARGIN_RATE);
+			if (e.isLong) {
+				profit = contracts * (price - e.price) * 0.1;
+			} else {
+				profit = contracts * (e.price - price) * 0.1;
+			}
+			profitMargin = (capital + profit) / capital;
+			if (inClose || ((e.isLong && buyVol <= c.buyVolExitPercentile) || (!e.isLong && sellVol <= c.sellVolExitPercentile))) {
+				/*
+				if (fabs(price - lastPrice) >= FUTURES_PRICE_CHANGE_LIMIT) {
+					profitMargin = max(min(profitMargin, precomputedTarget), precomputedStopLoss);
+				}
+				*/
+				capital *= profitMargin;
+				capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
+				bool win = profitMargin >= 1;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
+
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
+			}
+		}
+
+		if (e.price == 0.0 && !inClose && !onWeekend) {
+			if (buyVol >= c.buyVolPercentile) {
+				e = (entry) {price, true};
+				ls += 1;
+				tradeDurations[index].entryTimestamp = microseconds;
+			} else if (sellVol >= c.sellVolPercentile) {
+				e = (entry) {price, false};
+				ss += 1;
+				tradeDurations[index].entryTimestamp = microseconds;
+			}
+		}
+		lastPrice = price;
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+}
+
+__kernel void allVol(__global int* numTrades, __global tradeWithoutDate* trades, __global comboAllVol* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global int* numTradesInInterval) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	comboAllVol c = combos[index];
+	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	// printf("%d\n", numTrades);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+	entry e = entries[index];
+
+	double precomputedTarget = 1 + c.target * 0.01;
+	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
+
+	int tradesInInterval = 0;
+
+	int indicatorIdx = computeIndicatorIdx(c.window);
+
+	for (int i = 0; i < *numTrades; i++) {
+		double vol = trades[i].qty;
+		double price = trades[i].price;
+		double sellVol = inds[i].vols[2 * indicatorIdx];
+		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
+		double volDelta = buyVol - sellVol;
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profitMargin;
+			if (e.isLong) {
+				profitMargin = price / e.price;
+			} else {
+				profitMargin = 2 - price / e.price;
+			}
+			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+				capital *= profitMargin;
+				bool win = profitMargin >= 1.0;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
+			}
+		}
+
+		if (e.price == 0.0 && !inClose && !onWeekend) {
+			if (buyVol >= c.buyVolPercentile && volDelta >= c.buyVolDeltaPercentile) {
+				e = (entry) {price, true};
+				ls += 1;
+			} else if (sellVol >= c.sellVolPercentile && volDelta <= c.sellVolDeltaPercentile) {
+				e = (entry) {price, false};
+				ss += 1;
+			}
+		}
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+	numTradesInInterval[index] = tradesInInterval;
+}
+
+__kernel void allVolWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboAllVol* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	comboAllVol c = combos[index];
+	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	// printf("%d\n", numTrades);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+	entry e = entries[index];
+
+	double precomputedTarget = 1 + c.target * 0.01;
+	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
+
+	int tradesInInterval = 0;
+
+	int indicatorIdx = computeIndicatorIdx(c.window);
+
+	for (int i = 0; i < *numTrades; i++) {
+		double vol = trades[i].qty;
+		double price = trades[i].price;
+		double sellVol = inds[i].vols[2 * indicatorIdx];
+		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
+		double volDelta = buyVol - sellVol;
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profitMargin;
+			if (e.isLong) {
+				profitMargin = price / e.price;
+			} else {
+				profitMargin = 2 - price / e.price;
+			}
+			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+				capital *= profitMargin;
+				bool win = profitMargin >= 1.0;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
+
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
+			}
+		}
+
+		if (e.price == 0.0 && !inClose && !onWeekend) {
+			if (buyVol >= c.buyVolPercentile && volDelta >= c.buyVolDeltaPercentile) {
+				e = (entry) {price, true};
+				ls += 1;
+				tradeDurations[index].entryTimestamp = microseconds;
+			} else if (sellVol >= c.sellVolPercentile && volDelta <= c.sellVolDeltaPercentile) {
+				e = (entry) {price, false};
+				ss += 1;
+				tradeDurations[index].entryTimestamp = microseconds;
+			}
+		}
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+}
+
+__kernel void allVolFutures(__global int* numTrades, __global tradeWithoutDate* trades, __global comboAllVol* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global int* numTradesInInterval) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	comboAllVol c = combos[index];
+	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	// printf("%d\n", numTrades);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+	entry e = entries[index];
+
+	double precomputedTarget = 1 + c.target * 0.01;
+	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
+
+	int tradesInInterval = 0;
+
+	int indicatorIdx = computeIndicatorIdx(c.window);
+
+	double lastPrice = trades[0].price;
+	for (int i = 0; i < *numTrades; i++) {
+		double vol = trades[i].qty;
+		double price = trades[i].price;
+		double sellVol = inds[i].vols[2 * indicatorIdx];
+		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
+		double volDelta = buyVol - sellVol;
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profit, profitMargin;
+			int contracts = capital / (e.price * BTC_MARGIN_RATE);
+			if (e.isLong) {
+				profit = contracts * (price - e.price) * 0.1;
+			} else {
+				profit = contracts * (e.price - price) * 0.1;
+			}
+			profitMargin = (capital + profit) / capital;
+			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+				if (fabs(price - lastPrice) >= FUTURES_PRICE_CHANGE_LIMIT) {
+					profitMargin = max(min(profitMargin, precomputedTarget), precomputedStopLoss);
+				}
+				capital *= profitMargin;
+				capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
+				bool win = profitMargin >= 1;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
+			}
+		}
+
+		if (e.price == 0.0 && !inClose && !onWeekend) {
+			if (buyVol >= c.buyVolPercentile && volDelta >= c.buyVolDeltaPercentile) {
+				e = (entry) {price, true};
+				ls += 1;
+			} else if (sellVol >= c.sellVolPercentile && volDelta <= c.sellVolDeltaPercentile) {
+				e = (entry) {price, false};
+				ss += 1;
+			}
+		}
+		lastPrice = price;
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+	numTradesInInterval[index] = tradesInInterval;
+}
+
+__kernel void allVolFuturesWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboAllVol* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	comboAllVol c = combos[index];
+	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	// printf("%d\n", numTrades);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+	entry e = entries[index];
+
+	double precomputedTarget = 1 + c.target * 0.01;
+	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
+
+	int tradesInInterval = 0;
+
+	int indicatorIdx = computeIndicatorIdx(c.window);
+
+	double lastPrice = trades[0].price;
+	for (int i = 0; i < *numTrades; i++) {
+		double vol = trades[i].qty;
+		double price = trades[i].price;
+		double sellVol = inds[i].vols[2 * indicatorIdx];
+		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
+		double volDelta = buyVol - sellVol;
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profit, profitMargin;
+			int contracts = capital / (e.price * BTC_MARGIN_RATE);
+			if (e.isLong) {
+				profit = contracts * (price - e.price) * 0.1;
+			} else {
+				profit = contracts * (e.price - price) * 0.1;
+			}
+			profitMargin = (capital + profit) / capital;
+			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+				if (fabs(price - lastPrice) >= FUTURES_PRICE_CHANGE_LIMIT) {
+					profitMargin = max(min(profitMargin, precomputedTarget), precomputedStopLoss);
+				}
+				capital *= profitMargin;
+				capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
+				bool win = profitMargin >= 1;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
+
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
+			}
+		}
+
+		if (e.price == 0.0 && !inClose && !onWeekend) {
+			if (buyVol >= c.buyVolPercentile && volDelta >= c.buyVolDeltaPercentile) {
+				e = (entry) {price, true};
+				ls += 1;
+				tradeDurations[index].entryTimestamp = microseconds;
+			} else if (sellVol >= c.sellVolPercentile && volDelta <= c.sellVolDeltaPercentile) {
+				e = (entry) {price, false};
+				ss += 1;
+				tradeDurations[index].entryTimestamp = microseconds;
+			}
+		}
+		lastPrice = price;
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+}
+
+__kernel void trendFollower(__global int* numTrades, __global tradeWithoutDate* trades, __global comboTrend* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas, __global int* numTradesInInterval) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	comboTrend c = combos[index];
+	// printf("%d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+
+	entry e = entries[index];
+
+	double maxPrice = positionDatas[index].maxPrice;
+	double minPrice = positionDatas[index].minPrice;
+	bool increasing = positionDatas[index].bools & 1 << INCREASING_BIT;
+
+	double precomputedTarget = 1 + c.target * 0.01;
+	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
+
+	double precomputedLongEntryThreshold = 1 + c.entryThreshold * 0.01;
+	double precomputedShortEntryThreshold = 1 - c.entryThreshold * 0.01;
+
+	int tradesInInterval = 0;
+
+	for (int i = 0; i < *numTrades; i++) {
+		double price = trades[i].price;
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profitMargin;
+			if (e.isLong) {
+				profitMargin = price / e.price;
+			} else {
+				profitMargin = 2 - price / e.price;
+			}
+			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+				capital *= profitMargin;
+				bool win = profitMargin >= 1.0;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
+			}
+		}
+
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		if (increasing) {
+			maxPrice = max(maxPrice, price);
+			if (price / maxPrice <= precomputedShortEntryThreshold) {
+				minPrice = 1000000;
+				increasing = false;
+				if (e.price == 0.0 && !inClose && !onWeekend) {
+					e = (entry) {price, false};
+					ss += 1;
+				}
+			} else if (price / minPrice >= precomputedLongEntryThreshold) {
+				if (e.price == 0.0 && !inClose && !onWeekend) {
+					e = (entry) {price, true};
+					ls += 1;
+				}
+			}
+		} else {
+			minPrice = min(minPrice, price);
+			if (price / minPrice >= precomputedLongEntryThreshold) {
+				maxPrice = 1;
+				increasing = true;
+				if (e.price == 0.0 && !inClose && !onWeekend) {
+					e = (entry) {price, true};
+					ls += 1;
+				}
+			} else if (price / maxPrice <= precomputedShortEntryThreshold) {
+				if (e.price == 0.0 && !inClose && !onWeekend) {
+					e = (entry) {price, false};
+					ss += 1;
+				}
+			}
+		}
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+	positionDatas[index] = (positionData) {maxPrice, minPrice, (uchar) increasing << INCREASING_BIT};
+	numTradesInInterval[index] = tradesInInterval;
+}
+
+__kernel void trendFollowerWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboTrend* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	comboTrend c = combos[index];
+	// printf("%d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+
+	entry e = entries[index];
+
+	double maxPrice = positionDatas[index].maxPrice;
+	double minPrice = positionDatas[index].minPrice;
+	bool increasing = positionDatas[index].bools & 1 << INCREASING_BIT;
+
+	double precomputedTarget = 1 + c.target * 0.01;
+	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
+
+	double precomputedLongEntryThreshold = 1 + c.entryThreshold * 0.01;
+	double precomputedShortEntryThreshold = 1 - c.entryThreshold * 0.01;
+
+	int tradesInInterval = 0;
+
+	for (int i = 0; i < *numTrades; i++) {
+		double price = trades[i].price;
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profitMargin;
+			if (e.isLong) {
+				profitMargin = price / e.price;
+			} else {
+				profitMargin = 2 - price / e.price;
+			}
+			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+				capital *= profitMargin;
+				bool win = profitMargin >= 1.0;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
+
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
+			}
+		}
+
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		if (increasing) {
+			maxPrice = max(maxPrice, price);
+			if (price / maxPrice <= precomputedShortEntryThreshold) {
+				minPrice = 1000000;
+				increasing = false;
+				if (e.price == 0.0 && !inClose && !onWeekend) {
+					e = (entry) {price, false};
+					ss += 1;
+					tradeDurations[index].entryTimestamp = microseconds;
+				}
+			} else if (price / minPrice >= precomputedLongEntryThreshold) {
+				if (e.price == 0.0 && !inClose && !onWeekend) {
+					e = (entry) {price, true};
+					ls += 1;
+					tradeDurations[index].entryTimestamp = microseconds;
+				}
+			}
+		} else {
+			minPrice = min(minPrice, price);
+			if (price / minPrice >= precomputedLongEntryThreshold) {
+				maxPrice = 1;
+				increasing = true;
+				if (e.price == 0.0 && !inClose && !onWeekend) {
+					e = (entry) {price, true};
+					ls += 1;
+					tradeDurations[index].entryTimestamp = microseconds;
+				}
+			} else if (price / maxPrice <= precomputedShortEntryThreshold) {
+				if (e.price == 0.0 && !inClose && !onWeekend) {
+					e = (entry) {price, false};
+					ss += 1;
+					tradeDurations[index].entryTimestamp = microseconds;
+				}
+			}
+		}
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+	positionDatas[index] = (positionData) {maxPrice, minPrice, (uchar) increasing << INCREASING_BIT};
+}
+
+__kernel void trendFollowerFutures(__global int* numTrades, __global tradeWithoutDate* trades, __global comboTrend* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas, __global int* numTradesInInterval) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	comboTrend c = combos[index];
+	// printf("%d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+
+	entry e = entries[index];
+
+	double maxPrice = positionDatas[index].maxPrice;
+	double minPrice = positionDatas[index].minPrice;
+	bool increasing = positionDatas[index].bools & 1 << INCREASING_BIT;
+
+	double precomputedTarget = 1 + c.target * 0.01;
+	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
+
+	double precomputedLongEntryThreshold = 1 + c.entryThreshold * 0.01;
+	double precomputedShortEntryThreshold = 1 - c.entryThreshold * 0.01;
+
+	int tradesInInterval = 0;
+
+	double lastPrice = trades[0].price;
+	for (int i = 0; i < *numTrades; i++) {
+		double price = trades[i].price;
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profit, profitMargin;
+			int contracts = capital / (e.price * BTC_MARGIN_RATE);
+			if (e.isLong) {
+				profit = contracts * (price - e.price) * 0.1;
+			} else {
+				profit = contracts * (e.price - price) * 0.1;
+			}
+			profitMargin = (capital + profit) / capital;
+			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+				if (fabs(price - lastPrice) >= FUTURES_PRICE_CHANGE_LIMIT) {
+					profitMargin = max(min(profitMargin, precomputedTarget), precomputedStopLoss);
+				}
+				capital *= profitMargin;
+				capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
+				bool win = profitMargin >= 1;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
+			}
+		}
+
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		if (increasing) {
+			maxPrice = max(maxPrice, price);
+			if (price / maxPrice <= precomputedShortEntryThreshold) {
+				minPrice = 1000000;
+				increasing = false;
+				if (e.price == 0.0 && !inClose && !onWeekend) {
+					e = (entry) {price, false};
+					ss += 1;
+				}
+			} else if (price / minPrice >= precomputedLongEntryThreshold) {
+				if (e.price == 0.0 && !inClose && !onWeekend) {
+					e = (entry) {price, true};
+					ls += 1;
+				}
+			}
+		} else {
+			minPrice = min(minPrice, price);
+			if (price / minPrice >= precomputedLongEntryThreshold) {
+				maxPrice = 1;
+				increasing = true;
+				if (e.price == 0.0 && !inClose && !onWeekend) {
+					e = (entry) {price, true};
+					ls += 1;
+				}
+			} else if (price / maxPrice <= precomputedShortEntryThreshold) {
+				if (e.price == 0.0 && !inClose && !onWeekend) {
+					e = (entry) {price, false};
+					ss += 1;
+				}
+			}
+		}
+		lastPrice = price;
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+	positionDatas[index] = (positionData) {maxPrice, minPrice, (uchar) increasing << INCREASING_BIT};
+	numTradesInInterval[index] = tradesInInterval;
+}
+
+__kernel void trendFollowerFuturesWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboTrend* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	comboTrend c = combos[index];
+	// printf("%d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+
+	entry e = entries[index];
+
+	double maxPrice = positionDatas[index].maxPrice;
+	double minPrice = positionDatas[index].minPrice;
+	bool increasing = positionDatas[index].bools & 1 << INCREASING_BIT;
+
+	double precomputedTarget = 1 + c.target * 0.01;
+	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
+
+	double precomputedLongEntryThreshold = 1 + c.entryThreshold * 0.01;
+	double precomputedShortEntryThreshold = 1 - c.entryThreshold * 0.01;
+
+	int tradesInInterval = 0;
+
+	double lastPrice = trades[0].price;
+	for (int i = 0; i < *numTrades; i++) {
+		double price = trades[i].price;
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profit, profitMargin;
+			int contracts = capital / (e.price * BTC_MARGIN_RATE);
+			if (e.isLong) {
+				profit = contracts * (price - e.price) * 0.1;
+			} else {
+				profit = contracts * (e.price - price) * 0.1;
+			}
+			profitMargin = (capital + profit) / capital;
+			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+				if (fabs(price - lastPrice) >= FUTURES_PRICE_CHANGE_LIMIT) {
+					profitMargin = max(min(profitMargin, precomputedTarget), precomputedStopLoss);
+				}
+				capital *= profitMargin;
+				capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
+				bool win = profitMargin >= 1;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
+
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
+			}
+		}
+
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		if (increasing) {
+			maxPrice = max(maxPrice, price);
+			if (price / maxPrice <= precomputedShortEntryThreshold) {
+				minPrice = 1000000;
+				increasing = false;
+				if (e.price == 0.0 && !inClose && !onWeekend) {
+					e = (entry) {price, false};
+					ss += 1;
+					tradeDurations[index].entryTimestamp = microseconds;
+				}
+			} else if (price / minPrice >= precomputedLongEntryThreshold) {
+				if (e.price == 0.0 && !inClose && !onWeekend) {
+					e = (entry) {price, true};
+					ls += 1;
+					tradeDurations[index].entryTimestamp = microseconds;
+				}
+			}
+		} else {
+			minPrice = min(minPrice, price);
+			if (price / minPrice >= precomputedLongEntryThreshold) {
+				maxPrice = 1;
+				increasing = true;
+				if (e.price == 0.0 && !inClose && !onWeekend) {
+					e = (entry) {price, true};
+					ls += 1;
+					tradeDurations[index].entryTimestamp = microseconds;
+				}
+			} else if (price / maxPrice <= precomputedShortEntryThreshold) {
+				if (e.price == 0.0 && !inClose && !onWeekend) {
+					e = (entry) {price, false};
+					ss += 1;
+					tradeDurations[index].entryTimestamp = microseconds;
+				}
+			}
+		}
+		lastPrice = price;
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+	positionDatas[index] = (positionData) {maxPrice, minPrice, (uchar) increasing << INCREASING_BIT};
+}
+
+__kernel void volTrendTrader(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolTrend* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global positionData* positionDatas, __global int* numTradesInInterval) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	comboVolTrend c = combos[index];
+	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	// printf("%d\n", numTrades);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+	entry e = entries[index];
+
+	double maxPrice = positionDatas[index].maxPrice;
+	double minPrice = positionDatas[index].minPrice;
+	bool increasing = positionDatas[index].bools & 1 << INCREASING_BIT;
+
+	double precomputedTarget = 1 + c.target * 0.01;
+	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
+
+	double precomputedLongEntryThreshold = 1 + c.entryThreshold * 0.01;
+	double precomputedShortEntryThreshold = 1 - c.entryThreshold * 0.01;
+
+	int tradesInInterval = 0;
+
+	int indicatorIdx = computeIndicatorIdx(c.window);
+
+	for (int i = 0; i < *numTrades; i++) {
+		double vol = trades[i].qty;
+		double price = trades[i].price;
+		double sellVol = inds[i].vols[2 * indicatorIdx];
+		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profitMargin;
+			if (e.isLong) {
+				profitMargin = price / e.price;
+			} else {
+				profitMargin = 2 - price / e.price;
+			}
+			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+				capital *= profitMargin;
+				bool win = profitMargin >= 1.0;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
+			}
+		}
+
+		if (increasing) {
+			maxPrice = max(maxPrice, price);
+			if (price / maxPrice <= precomputedShortEntryThreshold) {
+				minPrice = 1000000;
+				increasing = false;
+				if (e.price == 0.0 && !inClose && !onWeekend && sellVol >= c.sellVolPercentile) {
+					e = (entry) {price, false};
+					ss += 1;
+				}
+			} else if (price / minPrice >= precomputedLongEntryThreshold) {
+				if (e.price == 0.0 && !inClose && !onWeekend && buyVol >= c.buyVolPercentile) {
+					e = (entry) {price, true};
+					ls += 1;
+				}
+			}
+		} else {
+			minPrice = min(minPrice, price);
+			if (price / minPrice >= precomputedLongEntryThreshold) {
+				maxPrice = 1;
+				increasing = true;
+				if (e.price == 0.0 && !inClose && !onWeekend && buyVol >= c.buyVolPercentile) {
+					e = (entry) {price, true};
+					ls += 1;
+				}
+			} else if (price / maxPrice <= precomputedShortEntryThreshold) {
+				if (e.price == 0.0 && !inClose && !onWeekend && sellVol >= c.sellVolPercentile) {
+					e = (entry) {price, false};
+					ss += 1;
+				}
+			}
+		}
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+	positionDatas[index] = (positionData) {maxPrice, minPrice, (uchar) increasing << INCREASING_BIT};
+	numTradesInInterval[index] = tradesInInterval;
+}
+
+__kernel void volTrendTraderWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolTrend* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global positionData* positionDatas, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	comboVolTrend c = combos[index];
+	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	// printf("%d\n", numTrades);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+	entry e = entries[index];
+
+	double maxPrice = positionDatas[index].maxPrice;
+	double minPrice = positionDatas[index].minPrice;
+	bool increasing = positionDatas[index].bools & 1 << INCREASING_BIT;
+
+	double precomputedTarget = 1 + c.target * 0.01;
+	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
+
+	double precomputedLongEntryThreshold = 1 + c.entryThreshold * 0.01;
+	double precomputedShortEntryThreshold = 1 - c.entryThreshold * 0.01;
+
+	int tradesInInterval = 0;
+
+	int indicatorIdx = computeIndicatorIdx(c.window);
+
+	for (int i = 0; i < *numTrades; i++) {
+		double vol = trades[i].qty;
+		double price = trades[i].price;
+		double sellVol = inds[i].vols[2 * indicatorIdx];
+		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profitMargin;
+			if (e.isLong) {
+				profitMargin = price / e.price;
+			} else {
+				profitMargin = 2 - price / e.price;
+			}
+			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+				capital *= profitMargin;
+				bool win = profitMargin >= 1.0;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
+
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
+			}
+		}
+
+		if (increasing) {
+			maxPrice = max(maxPrice, price);
+			if (price / maxPrice <= precomputedShortEntryThreshold) {
+				minPrice = 1000000;
+				increasing = false;
+				if (e.price == 0.0 && !inClose && !onWeekend && sellVol >= c.sellVolPercentile) {
+					e = (entry) {price, false};
+					ss += 1;
+					tradeDurations[index].entryTimestamp = microseconds;
+				}
+			} else if (price / minPrice >= precomputedLongEntryThreshold) {
+				if (e.price == 0.0 && !inClose && !onWeekend && buyVol >= c.buyVolPercentile) {
+					e = (entry) {price, true};
+					ls += 1;
+					tradeDurations[index].entryTimestamp = microseconds;
+				}
+			}
+		} else {
+			minPrice = min(minPrice, price);
+			if (price / minPrice >= precomputedLongEntryThreshold) {
+				maxPrice = 1;
+				increasing = true;
+				if (e.price == 0.0 && !inClose && !onWeekend && buyVol >= c.buyVolPercentile) {
+					e = (entry) {price, true};
+					ls += 1;
+					tradeDurations[index].entryTimestamp = microseconds;
+				}
+			} else if (price / maxPrice <= precomputedShortEntryThreshold) {
+				if (e.price == 0.0 && !inClose && !onWeekend && sellVol >= c.sellVolPercentile) {
+					e = (entry) {price, false};
+					ss += 1;
+					tradeDurations[index].entryTimestamp = microseconds;
+				}
+			}
+		}
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+	positionDatas[index] = (positionData) {maxPrice, minPrice, (uchar) increasing << INCREASING_BIT};
+}
+
+__kernel void volTrendTraderFutures(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolTrend* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global positionData* positionDatas, __global int* numTradesInInterval) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	comboVolTrend c = combos[index];
+	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	// printf("%d\n", numTrades);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+	entry e = entries[index];
+
+	double maxPrice = positionDatas[index].maxPrice;
+	double minPrice = positionDatas[index].minPrice;
+	bool increasing = positionDatas[index].bools & 1 << INCREASING_BIT;
+
+	double precomputedTarget = 1 + c.target * 0.01;
+	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
+
+	double precomputedLongEntryThreshold = 1 + c.entryThreshold * 0.01;
+	double precomputedShortEntryThreshold = 1 - c.entryThreshold * 0.01;
+
+	int tradesInInterval = 0;
+
+	int indicatorIdx = computeIndicatorIdx(c.window);
+
+	double lastPrice = trades[0].price;
+	for (int i = 0; i < *numTrades; i++) {
+		double vol = trades[i].qty;
+		double price = trades[i].price;
+		double sellVol = inds[i].vols[2 * indicatorIdx];
+		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profit, profitMargin;
+			int contracts = capital / (e.price * BTC_MARGIN_RATE);
+			if (e.isLong) {
+				profit = contracts * (price - e.price) * 0.1;
+			} else {
+				profit = contracts * (e.price - price) * 0.1;
+			}
+			profitMargin = (capital + profit) / capital;
+			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+				if (fabs(price - lastPrice) >= FUTURES_PRICE_CHANGE_LIMIT) {
+					profitMargin = max(min(profitMargin, precomputedTarget), precomputedStopLoss);
+				}
+				capital *= profitMargin;
+				capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
+				bool win = profitMargin >= 1;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
+			}
+		}
+
+		if (increasing) {
+			maxPrice = max(maxPrice, price);
+			if (price / maxPrice <= precomputedShortEntryThreshold) {
+				minPrice = 1000000;
+				increasing = false;
+				if (e.price == 0.0 && !inClose && !onWeekend && sellVol >= c.sellVolPercentile) {
+					e = (entry) {price, false};
+					ss += 1;
+				}
+			} else if (price / minPrice >= precomputedLongEntryThreshold) {
+				if (e.price == 0.0 && !inClose && !onWeekend && buyVol >= c.buyVolPercentile) {
+					e = (entry) {price, true};
+					ls += 1;
+				}
+			}
+		} else {
+			minPrice = min(minPrice, price);
+			if (price / minPrice >= precomputedLongEntryThreshold) {
+				maxPrice = 1;
+				increasing = true;
+				if (e.price == 0.0 && !inClose && !onWeekend && buyVol >= c.buyVolPercentile) {
+					e = (entry) {price, true};
+					ls += 1;
+				}
+			} else if (price / maxPrice <= precomputedShortEntryThreshold) {
+				if (e.price == 0.0 && !inClose && !onWeekend && sellVol >= c.sellVolPercentile) {
+					e = (entry) {price, false};
+					ss += 1;
+				}
+			}
+		}
+		lastPrice = price;
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+	positionDatas[index] = (positionData) {maxPrice, minPrice, (uchar) increasing << INCREASING_BIT};
+	numTradesInInterval[index] = tradesInInterval;
+}
+
+__kernel void volTrendTraderFuturesWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolTrend* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global positionData* positionDatas, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+	int index = get_global_id(0);
+	double capital = tradeRecords[index].capital;
+	comboVolTrend c = combos[index];
+	// printf("%d %d %d %d %d\n", sizeof(int), sizeof(double), sizeof(long), sizeof(bool), sizeof(long long));
+	// printf("%d %f %f %f %f\n", c.window, c.buyVolPercentile, c.sellVolPercentile, c.stopLoss, c.target);
+	// printf("%d\n", numTrades);
+	int ls = tradeRecords[index].longs;
+	int lw = tradeRecords[index].longWins;
+	int ll = tradeRecords[index].longLosses;
+	int ss = tradeRecords[index].shorts;
+	int sw = tradeRecords[index].shortWins;
+	int sl = tradeRecords[index].shortLosses;
+	entry e = entries[index];
+
+	double maxPrice = positionDatas[index].maxPrice;
+	double minPrice = positionDatas[index].minPrice;
+	bool increasing = positionDatas[index].bools & 1 << INCREASING_BIT;
+
+	double precomputedTarget = 1 + c.target * 0.01;
+	double precomputedStopLoss = 1 - c.stopLoss * 0.01;
+
+	double precomputedLongEntryThreshold = 1 + c.entryThreshold * 0.01;
+	double precomputedShortEntryThreshold = 1 - c.entryThreshold * 0.01;
+
+	int tradesInInterval = 0;
+
+	int indicatorIdx = computeIndicatorIdx(c.window);
+
+	double lastPrice = trades[0].price;
+	for (int i = 0; i < *numTrades; i++) {
+		double vol = trades[i].qty;
+		double price = trades[i].price;
+		double sellVol = inds[i].vols[2 * indicatorIdx];
+		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
+		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
+		long microseconds = trades[i].timestamp;
+		int isDSTInt = isDST(microseconds);
+		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
+		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+		if (e.price != 0.0) {
+			double profit, profitMargin;
+			int contracts = capital / (e.price * BTC_MARGIN_RATE);
+			if (e.isLong) {
+				profit = contracts * (price - e.price) * 0.1;
+			} else {
+				profit = contracts * (e.price - price) * 0.1;
+			}
+			profitMargin = (capital + profit) / capital;
+			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+				if (fabs(price - lastPrice) >= FUTURES_PRICE_CHANGE_LIMIT) {
+					profitMargin = max(min(profitMargin, precomputedTarget), precomputedStopLoss);
+				}
+				capital *= profitMargin;
+				capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
+				bool win = profitMargin >= 1;
+				if (e.isLong) {
+					lw += win;
+					ll += !win;
+				} else {
+					sw += win;
+					sl += !win;
+				}
+				e = (entry) {0.0, false};
+				tradesInInterval++;
+
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
+			}
+		}
+
+		if (increasing) {
+			maxPrice = max(maxPrice, price);
+			if (price / maxPrice <= precomputedShortEntryThreshold) {
+				minPrice = 1000000;
+				increasing = false;
+				if (e.price == 0.0 && !inClose && !onWeekend && sellVol >= c.sellVolPercentile) {
+					e = (entry) {price, false};
+					ss += 1;
+					tradeDurations[index].entryTimestamp = microseconds;
+				}
+			} else if (price / minPrice >= precomputedLongEntryThreshold) {
+				if (e.price == 0.0 && !inClose && !onWeekend && buyVol >= c.buyVolPercentile) {
+					e = (entry) {price, true};
+					ls += 1;
+					tradeDurations[index].entryTimestamp = microseconds;
+				}
+			}
+		} else {
+			minPrice = min(minPrice, price);
+			if (price / minPrice >= precomputedLongEntryThreshold) {
+				maxPrice = 1;
+				increasing = true;
+				if (e.price == 0.0 && !inClose && !onWeekend && buyVol >= c.buyVolPercentile) {
+					e = (entry) {price, true};
+					ls += 1;
+					tradeDurations[index].entryTimestamp = microseconds;
+				}
+			} else if (price / maxPrice <= precomputedShortEntryThreshold) {
+				if (e.price == 0.0 && !inClose && !onWeekend && sellVol >= c.sellVolPercentile) {
+					e = (entry) {price, false};
+					ss += 1;
+					tradeDurations[index].entryTimestamp = microseconds;
+				}
+			}
+		}
+		lastPrice = price;
+	}
+
+	entries[index] = e;
+	tradeRecords[index] = (tradeRecord) {capital, ss, sw, sl, ls, lw, ll};
+	positionDatas[index] = (positionData) {maxPrice, minPrice, (uchar) increasing << INCREASING_BIT};
 }

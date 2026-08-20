@@ -11,13 +11,18 @@
 #include <vector>
 
 using std::array;
+using std::decay_t;
+using std::defaultfloat;
+using std::fixed;
 using std::format;
+using std::is_same_v;
 using std::istream_iterator;
 using std::istringstream;
 using std::ostringstream;
 using std::put_time;
 using std::string;
 using std::vector;
+using std::visit;
 using std::chrono::microseconds;
 using std::chrono::system_clock;
 
@@ -330,4 +335,134 @@ void analyzePerf(vector<perfMetrics> &allPerfMetrics,
 
 		allPerfMetrics[i] = p;
 	}
+}
+
+void outputMetrics(ostream &os, size_t idx, const ComboVec &comboVec,
+									 const vector<tradeRecord> &tradeRecordsVec,
+									 const vector<perfMetrics> &allPerfMetrics,
+									 const vector<drawdowns> &drawdownsVec,
+									 const vector<drawdownLengths> &drawdownLengthsVec,
+									 const vector<lossStreaks> &lossStreaksVec,
+									 const vector<tradeDurations> &tradeDurationsVec,
+									 const vector<wins> &winsVec, const vector<losses> &lossesVec,
+									 bool listTrades) {
+
+	os << fixed;
+	os << "Combo index: " << idx << endl;
+	os << "Annualized return: " << tradeRecordsVec[idx].capital << endl;
+
+	auto visitor = [&os, &idx](auto &vec) {
+		using T = typename decay_t<decltype(vec)>::value_type;
+		if constexpr (is_same_v<T, comboVol>) {
+			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
+			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
+				 << endl;
+			os << "Window: " << vec[idx].window / ONE_MINUTE_MICROSECONDS
+				 << " minutes" << endl;
+			os << "Buy volume threshold: " << vec[idx].buyVolPercentile << endl;
+			os << "Sell volume threshold: " << vec[idx].sellVolPercentile << endl;
+		} else if constexpr (is_same_v<T, comboVolDelta>) {
+			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
+			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
+				 << endl;
+			os << "Window: " << vec[idx].window / ONE_MINUTE_MICROSECONDS
+				 << " minutes" << endl;
+			os << "Buy volume delta threshold: " << vec[idx].buyVolDeltaPercentile
+				 << endl;
+			os << "Sell volume delta threshold: " << vec[idx].sellVolDeltaPercentile
+				 << endl;
+		} else if constexpr (is_same_v<T, comboVolExit>) {
+			os << "Window: " << vec[idx].window / ONE_MINUTE_MICROSECONDS
+				 << " minutes" << endl;
+			os << "Buy volume threshold: " << vec[idx].buyVolPercentile << endl;
+			os << "Sell volume threshold: " << vec[idx].sellVolPercentile << endl;
+			os << "Buy volume exit threshold: " << vec[idx].buyVolExitPercentile
+				 << endl;
+			os << "Sell volume exit threshold: " << vec[idx].sellVolExitPercentile
+				 << endl;
+		} else if constexpr (is_same_v<T, comboAllVol>) {
+			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
+			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
+				 << endl;
+			os << "Window: " << vec[idx].window / ONE_MINUTE_MICROSECONDS
+				 << " minutes" << endl;
+			os << "Buy volume threshold: " << vec[idx].buyVolPercentile << endl;
+			os << "Sell volume threshold: " << vec[idx].sellVolPercentile << endl;
+			os << "Buy volume delta threshold: " << vec[idx].buyVolDeltaPercentile
+				 << endl;
+			os << "Sell volume delta threshold: " << vec[idx].sellVolDeltaPercentile
+				 << endl;
+		} else if constexpr (is_same_v<T, comboTrend>) {
+			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
+			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
+				 << endl;
+			os << "Entry threshold: "
+				 << format("{:.2f}", (double)vec[idx].entryThreshold) << endl;
+		} else if constexpr (is_same_v<T, comboVolTrend>) {
+			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
+			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
+				 << endl;
+			os << "Window: " << vec[idx].window / ONE_MINUTE_MICROSECONDS
+				 << " minutes" << endl;
+			os << "Buy volume threshold: " << vec[idx].buyVolPercentile << endl;
+			os << "Sell volume threshold: " << vec[idx].sellVolPercentile << endl;
+			os << "Entry threshold: "
+				 << format("{:.2f}", (double)vec[idx].entryThreshold) << endl;
+		}
+	};
+
+	visit(visitor, comboVec);
+
+	os << "Total trades: "
+		 << tradeRecordsVec[idx].shorts + tradeRecordsVec[idx].longs << endl;
+	os << "Wins: "
+		 << tradeRecordsVec[idx].shortWins + tradeRecordsVec[idx].longWins << endl;
+	os << "Losses: "
+		 << tradeRecordsVec[idx].shortLosses + tradeRecordsVec[idx].longLosses
+		 << endl;
+	os << "Longs: " << tradeRecordsVec[idx].longs << endl;
+	os << "Long wins: " << tradeRecordsVec[idx].longWins << endl;
+	os << "Long losses: " << tradeRecordsVec[idx].longLosses << endl;
+	os << "Shorts: " << tradeRecordsVec[idx].shorts << endl;
+	os << "Short wins: " << tradeRecordsVec[idx].shortWins << endl;
+	os << "Short losses: " << tradeRecordsVec[idx].shortLosses << endl;
+
+	if (listTrades) {
+		os << "Sharpe ratio: " << allPerfMetrics[idx].sharpe << endl;
+		os << "Average win margin: " << winsVec[idx].mean << endl;
+		os << "Win margin standard deviation: "
+			 << sqrt(winsVec[idx].m2 / (winsVec[idx].n - 1)) << endl;
+		os << "Average loss margin: " << lossesVec[idx].mean << endl;
+		os << "Loss margin standard deviation: "
+			 << sqrt(lossesVec[idx].m2 / (lossesVec[idx].n - 1)) << endl;
+		os << "Average drawdown: " << drawdownsVec[idx].mean << endl;
+		os << "Drawdown standard deviation: "
+			 << sqrt(drawdownsVec[idx].m2 / (drawdownsVec[idx].n - 1)) << endl;
+		os << "Max drawdown: " << drawdownsVec[idx].max << endl;
+		os << "Average loss streak: " << lossStreaksVec[idx].mean << endl;
+		os << "Loss streak standard deviation: "
+			 << sqrt(lossStreaksVec[idx].m2 / (lossStreaksVec[idx].n - 1)) << endl;
+		os << "Max loss streak: " << lossStreaksVec[idx].max << endl;
+		os << "Average drawdown length: "
+			 << drawdownLengthsVec[idx].mean / (double)ONE_HOUR_MICROSECONDS
+			 << " hours" << endl;
+		os << "Drawdown length standard deviation: "
+			 << sqrt(drawdownLengthsVec[idx].m2 / (lossStreaksVec[idx].n - 1)) /
+							(double)ONE_HOUR_MICROSECONDS
+			 << " hours" << endl;
+		os << "Max drawdown length: "
+			 << drawdownLengthsVec[idx].max / (double)ONE_HOUR_MICROSECONDS
+			 << " hours" << endl;
+		os << "Average trade duration: "
+			 << tradeDurationsVec[idx].mean / (double)ONE_MINUTE_MICROSECONDS
+			 << " minutes" << endl;
+		os << "Trade duration standard deviation: "
+			 << sqrt(tradeDurationsVec[idx].m2 / (tradeDurationsVec[idx].n - 1)) /
+							(double)ONE_MINUTE_MICROSECONDS
+			 << " minutes" << endl;
+		os << "Max trade duration: "
+			 << (double)tradeDurationsVec[idx].max / (double)ONE_MINUTE_MICROSECONDS
+			 << " minutes" << endl;
+	}
+	os << defaultfloat;
 }

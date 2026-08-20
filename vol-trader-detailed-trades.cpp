@@ -49,8 +49,6 @@ using std::ranges::views::cartesian_product;
 using std::cout;
 using std::endl;
 
-#define NUM_WINDOWS 16
-
 #define INCREMENT 1000000
 #define TRADE_CHUNK 50000000
 
@@ -64,15 +62,11 @@ mutex coutMutex;
 
 // const vector<size_t> indicesToRun = {62134, 53504, 62983};
 // const vector<size_t> indicesToRun = {962240, 473688};
-const vector<size_t> indicesToRun = {962240};
+const vector<size_t> indicesToRun = {765701, 1077356};
 
 cl::Program program; // The program that will run on the device.
 cl::Context context; // The context which holds the device.
 cl::Device device;	 // The device where the kernel will run.
-
-struct __attribute__((packed)) indicators {
-	array<cl_double, 2 * NUM_WINDOWS> vols;
-};
 
 struct timeWindow {
 	size_t tradeIdx;
@@ -106,6 +100,7 @@ struct __attribute__((packed)) detailedTrade {
 	long long exitTimestamp;
 	entryData e;
 	bool isLong;
+	double endingCapital;
 };
 
 struct __attribute__((packed)) positionData {
@@ -113,11 +108,6 @@ struct __attribute__((packed)) positionData {
 	cl_double buyVol;
 	cl_double sellVol;
 	cl_int tradeIdx;
-};
-
-struct __attribute__((packed)) twMetadata {
-	cl_int twTranslation;
-	cl_int twStart;
 };
 
 void computeIndicators(const vector<tradeWithoutDate> &tradesWithoutDates,
@@ -202,6 +192,7 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 
 	int indicatorIdx = c.window / FIFTEEN_MINUTES_MICROSECONDS - 1;
 
+	double lastPrice = trades[currIdx].price;
 	for (size_t i = currIdx; i < currIdx + currSize; i++) {
 		double price = trades[i].price;
 		double sellVol = inds[i].vols[2 * indicatorIdx];
@@ -228,6 +219,9 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 					profitMargin = price / e.price;
 				if (inClose || profitMargin >= precomputedTarget ||
 						profitMargin <= precomputedStopLoss) {
+					if (abs(price - lastPrice) >= FUTURES_PRICE_CHANGE_LIMIT)
+						profitMargin =
+								max(min(profitMargin, precomputedTarget), precomputedStopLoss);
 					capital *= profitMargin;
 					if (futures)
 						capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
@@ -245,6 +239,9 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 					profitMargin = 2 - price / e.price;
 				if (inClose || profitMargin >= precomputedTarget ||
 						profitMargin <= precomputedStopLoss) {
+					if (abs(price - lastPrice) >= FUTURES_PRICE_CHANGE_LIMIT)
+						profitMargin =
+								max(min(profitMargin, precomputedTarget), precomputedStopLoss);
 					capital *= profitMargin;
 					if (futures)
 						capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
@@ -265,6 +262,7 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 				ss += 1;
 			}
 		}
+		lastPrice = price;
 	}
 
 	entries[index] = e;
@@ -298,6 +296,7 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 
 	int indicatorIdx = c.window / FIFTEEN_MINUTES_MICROSECONDS - 1;
 
+	double lastPrice = trades[currIdx].price;
 	for (size_t i = currIdx; i < currIdx + currSize; i++) {
 		double price = trades[i].price;
 		double sellVol = inds[i].vols[2 * indicatorIdx];
@@ -333,6 +332,9 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 			}
 			if (inClose || profitMargin >= precomputedTarget ||
 					profitMargin <= precomputedStopLoss) {
+				if (abs(price - lastPrice) >= FUTURES_PRICE_CHANGE_LIMIT)
+					profitMargin =
+							max(min(profitMargin, precomputedTarget), precomputedStopLoss);
 				capital *= profitMargin;
 				if (futures)
 					capital -= 2 * contracts * BTC_COMMISSION_PER_CONTRACT;
@@ -358,6 +360,7 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 #endif
 				allTrades[index].back().profitMargin = profitMargin;
 				allTrades[index].back().exitTimestamp = microseconds;
+				allTrades[index].back().endingCapital = capital;
 
 				e = (entry){0.0, false};
 
@@ -490,6 +493,7 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 				allTrades[index].push_back(currentTrade);
 			}
 		}
+		lastPrice = price;
 	}
 
 	entries[index] = e;
@@ -760,7 +764,7 @@ void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
 				} else {
 					os << "Short ";
 				}
-				os << e.profitMargin << endl;
+				os << e.profitMargin << " " << e.endingCapital << endl;
 				os << e.entryTimestamp << " ";
 				auto tp = system_clock::time_point(microseconds(e.entryTimestamp));
 				os << format("{:%Y-%m-%d %H:%M:%S}", tp) << endl;
@@ -1208,8 +1212,7 @@ int main(int argc, char *argv[]) {
 								processTradesWithIndicators(
 										tradesWithoutDates, indicators, tws, comboVec, entriesVec,
 										tradeRecordsVec, numTradesInIntervalVec, futures));
-		} else
-			cout << "Run was already finished in the snapshot" << endl;
+		}
 	}
 
 	for (size_t i = 0; i < tradeRecordsVec.size(); i++) {
