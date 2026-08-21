@@ -984,11 +984,15 @@ int main(int argc, char *argv[]) {
 	size_t tradeRecordsVecSize = tradeRecordsVec.size() * sizeof(tradeRecord);
 
 	ifstream snapshotFile;
+#ifdef DEBUG
 	bool existingSnapshot;
+#endif
 	if (snapshotting) {
 		snapshotFile.open(snapshotFilename, ios::binary);
 		if (snapshotFile.good()) {
+#ifdef DEBUG
 			existingSnapshot = true;
+#endif
 			if (!snapshotFile.read(reinterpret_cast<char *>(&globalIdx),
 														 sizeof(globalIdx))) {
 				cout << "Failed to read previous index" << endl;
@@ -1042,7 +1046,9 @@ int main(int argc, char *argv[]) {
 			}
 		} else {
 			cout << "No snapshot file detected" << endl;
+#ifdef DEBUG
 			existingSnapshot = false;
+#endif
 		}
 	}
 
