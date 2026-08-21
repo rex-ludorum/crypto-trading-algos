@@ -1,6 +1,5 @@
 #include "helper.h"
 #include <CL/opencl.hpp>
-#include <array>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -12,8 +11,8 @@
 #include <unistd.h>
 #include <vector>
 
-using std::array;
 using std::boolalpha;
+using std::decay_t;
 using std::defaultfloat;
 using std::fixed;
 using std::format;
@@ -21,6 +20,7 @@ using std::generate;
 using std::get_time;
 using std::ifstream;
 using std::ios;
+using std::is_same_v;
 using std::istringstream;
 using std::max;
 using std::max_element;
@@ -28,13 +28,13 @@ using std::min;
 using std::min_element;
 using std::mktime;
 using std::ofstream;
-using std::ostream;
 using std::stod;
 using std::stoi;
 using std::string;
 using std::tm;
 using std::transform;
 using std::vector;
+using std::visit;
 using std::chrono::duration_cast;
 using std::chrono::high_resolution_clock;
 using std::chrono::microseconds;
@@ -44,10 +44,11 @@ using std::ranges::views::cartesian_product;
 using std::cout;
 using std::endl;
 
-#define NUM_WINDOWS 4
-
 #define INCREMENT 1000000
 #define TRADE_CHUNK 50000000
+
+#define PERCENTILE_CEILING 30
+#define PERCENTILE_FLOOR 12
 
 static size_t newStart = 0;
 static size_t globalIdx = 0;
@@ -56,43 +57,6 @@ static string snapshotFilename;
 cl::Program program; // The program that will run on the device.
 cl::Context context; // The context which holds the device.
 cl::Device device;	 // The device where the kernel will run.
-
-struct __attribute__((packed)) indicators {
-	array<cl_double, NUM_WINDOWS> vols;
-};
-
-struct timeWindow {
-	size_t tradeIdx;
-	long long timestamp;
-};
-
-struct __attribute__((packed)) combo {
-	cl_long window;
-	cl_double buyVolDeltaPercentile;
-	cl_double sellVolDeltaPercentile;
-	cl_double stopLoss;
-	cl_double target;
-};
-
-struct __attribute__((packed)) entryData {
-	cl_double volDelta;
-};
-
-struct __attribute__((packed)) entryAndExit {
-	cl_double profitMargin;
-	cl_int entryIndex;
-	cl_int exitIndex;
-	entryData e;
-	cl_uchar isLong;
-};
-
-struct __attribute__((packed)) detailedTrade {
-	double profitMargin;
-	long long entryTimestamp;
-	long long exitTimestamp;
-	entryData e;
-	bool isLong;
-};
 
 void computeIndicators(const vector<tradeWithoutDate> &tradesWithoutDates,
 											 vector<indicators> &inds, vector<timeWindow> &tws,
@@ -112,10 +76,10 @@ void computeIndicators(const vector<tradeWithoutDate> &tradesWithoutDates,
 		tradeWithoutDate t = tradesWithoutDates[i];
 		if (t.isBuyerMaker) {
 			for (size_t j = 0; j < NUM_WINDOWS; j++)
-				ind.vols[j] -= t.qty * t.price;
+				ind.vols[2 * j] += t.qty * t.price;
 		} else {
 			for (size_t j = 0; j < NUM_WINDOWS; j++)
-				ind.vols[j] += t.qty * t.price;
+				ind.vols[2 * j + 1] += t.qty * t.price;
 		}
 		for (size_t j = 0; j < NUM_WINDOWS; j++) {
 			if (t.timestamp - tws[j].timestamp > windows[j]) {
@@ -124,9 +88,9 @@ void computeIndicators(const vector<tradeWithoutDate> &tradesWithoutDates,
 					tradeWithoutDate oldT = tradesWithoutDates[k];
 					if (t.timestamp - oldT.timestamp > windows[j]) {
 						if (oldT.isBuyerMaker)
-							ind.vols[j] += oldT.qty * oldT.price;
+							ind.vols[2 * j] -= oldT.qty * oldT.price;
 						else
-							ind.vols[j] -= oldT.qty * oldT.price;
+							ind.vols[2 * j + 1] -= oldT.qty * oldT.price;
 					} else {
 						break;
 					}
@@ -139,10 +103,14 @@ void computeIndicators(const vector<tradeWithoutDate> &tradesWithoutDates,
 		if (testIdx % 500000 == 0) {
 			cout << fixed;
 			cout << "Timestamp: " << t.timestamp << endl;
-			cout << "15 minute volume delta: " << ind.vols[0] << endl;
-			cout << "30 minute volume delta: " << ind.vols[1] << endl;
-			cout << "45 minute volume delta: " << ind.vols[2] << endl;
-			cout << "60 minute volume delta: " << ind.vols[3] << endl;
+			cout << "15 minute buy volume: " << ind.vols[1] << endl;
+			cout << "15 minute sell volume: " << ind.vols[0] << endl;
+			cout << "30 minute buy volume: " << ind.vols[3] << endl;
+			cout << "30 minute sell volume: " << ind.vols[2] << endl;
+			cout << "45 minute buy volume: " << ind.vols[5] << endl;
+			cout << "45 minute sell volume: " << ind.vols[4] << endl;
+			cout << "60 minute buy volume: " << ind.vols[7] << endl;
+			cout << "60 minute sell volume: " << ind.vols[6] << endl;
 			cout << defaultfloat;
 		}
 #endif
@@ -152,7 +120,8 @@ void computeIndicators(const vector<tradeWithoutDate> &tradesWithoutDates,
 
 void saveSnapshot(size_t index, size_t start, const vector<entry> &entriesVec,
 									const vector<tradeRecord> &tradeRecordsVec,
-									const vector<cl_int> &numTradesInIntervalVec) {
+									const vector<positionData> &positionDatasVec,
+									const vector<cl_int> &numTradesInIntervalVec, Mode mode) {
 	ofstream file(snapshotFilename, ios::binary);
 	if (!file) {
 		cout << "Error opening snapshot file" << endl;
@@ -160,11 +129,37 @@ void saveSnapshot(size_t index, size_t start, const vector<entry> &entriesVec,
 	}
 
 	file.write(reinterpret_cast<const char *>(&index), sizeof(index));
-	file.write(reinterpret_cast<const char *>(&start), sizeof(start));
+
+	switch (mode) {
+	case Mode::Volume:
+	case Mode::VolumeDelta:
+	case Mode::VolumeExit:
+	case Mode::AllVolume:
+	case Mode::VolumeTrend:
+		file.write(reinterpret_cast<const char *>(&start), sizeof(start));
+		break;
+	case Mode::Trend:
+		break;
+	}
+
 	file.write(reinterpret_cast<const char *>(entriesVec.data()),
 						 entriesVec.size() * sizeof(entry));
 	file.write(reinterpret_cast<const char *>(tradeRecordsVec.data()),
 						 tradeRecordsVec.size() * sizeof(tradeRecord));
+
+	switch (mode) {
+	case Mode::Volume:
+	case Mode::VolumeDelta:
+	case Mode::VolumeExit:
+	case Mode::AllVolume:
+		break;
+	case Mode::Trend:
+	case Mode::VolumeTrend:
+		file.write(reinterpret_cast<const char *>(positionDatasVec.data()),
+							 positionDatasVec.size() * sizeof(positionData));
+		break;
+	}
+
 	file.write(reinterpret_cast<const char *>(numTradesInIntervalVec.data()),
 						 numTradesInIntervalVec.size() * sizeof(cl_int));
 	file.close();
@@ -172,12 +167,13 @@ void saveSnapshot(size_t index, size_t start, const vector<entry> &entriesVec,
 
 void saveSnapshot(size_t index, size_t start, const vector<entry> &entriesVec,
 									const vector<tradeRecord> &tradeRecordsVec,
+									const vector<positionData> &positionDatasVec,
 									vector<drawdowns> &drawdownsVec,
 									vector<drawdownLengths> &drawdownLengthsVec,
 									vector<lossStreaks> &lossStreaksVec,
 									vector<tradeDurations> &tradeDurationsVec,
 									vector<monthlyReturns> &monthlyReturnsVec,
-									vector<wins> &winsVec, vector<losses> &lossesVec) {
+									vector<wins> &winsVec, vector<losses> &lossesVec, Mode mode) {
 	ofstream file(snapshotFilename, ios::binary);
 	if (!file) {
 		cout << "Error opening snapshot file" << endl;
@@ -185,11 +181,37 @@ void saveSnapshot(size_t index, size_t start, const vector<entry> &entriesVec,
 	}
 
 	file.write(reinterpret_cast<const char *>(&index), sizeof(index));
-	file.write(reinterpret_cast<const char *>(&start), sizeof(start));
+
+	switch (mode) {
+	case Mode::Volume:
+	case Mode::VolumeDelta:
+	case Mode::VolumeExit:
+	case Mode::AllVolume:
+	case Mode::VolumeTrend:
+		file.write(reinterpret_cast<const char *>(&start), sizeof(start));
+		break;
+	case Mode::Trend:
+		break;
+	}
+
 	file.write(reinterpret_cast<const char *>(entriesVec.data()),
 						 entriesVec.size() * sizeof(entry));
 	file.write(reinterpret_cast<const char *>(tradeRecordsVec.data()),
 						 tradeRecordsVec.size() * sizeof(tradeRecord));
+
+	switch (mode) {
+	case Mode::Volume:
+	case Mode::VolumeDelta:
+	case Mode::VolumeExit:
+	case Mode::AllVolume:
+		break;
+	case Mode::Trend:
+	case Mode::VolumeTrend:
+		file.write(reinterpret_cast<const char *>(positionDatasVec.data()),
+							 positionDatasVec.size() * sizeof(positionData));
+		break;
+	}
+
 	file.write(reinterpret_cast<const char *>(drawdownsVec.data()),
 						 drawdownsVec.size() * sizeof(drawdowns));
 	file.write(reinterpret_cast<const char *>(drawdownLengthsVec.data()),
@@ -207,15 +229,17 @@ void saveSnapshot(size_t index, size_t start, const vector<entry> &entriesVec,
 	file.close();
 }
 
-int processTradesWithIndicators(
+int processTrades(
 		const cl::CommandQueue &queue, const cl::Kernel &kernel,
 		vector<tradeWithoutDate> &tradesWithoutDates, vector<indicators> &inds,
-		vector<timeWindow> &tws, const vector<combo> &comboVec,
-		const cl::Buffer &inputTrades, const cl::Buffer &indicatorBuffer,
-		const cl::Buffer &inputSize, const cl::Buffer &entries,
-		const cl::Buffer &tradeRecords, const cl::Buffer &numTradesInIntervalBuf,
-		vector<entry> &entriesVec, vector<tradeRecord> &tradeRecordsVec,
-		vector<cl_int> &numTradesInIntervalVec, bool snapshotting) {
+		vector<timeWindow> &tws, const size_t numCombos,
+		const cl::Buffer &inputTrades, const cl::Buffer &inputSize,
+		const cl::Buffer &entries, const cl::Buffer &tradeRecords,
+		const cl::Buffer &indicatorBuffer, const cl::Buffer &positionDatas,
+		const cl::Buffer &numTradesInIntervalBuf, vector<entry> &entriesVec,
+		vector<tradeRecord> &tradeRecordsVec,
+		vector<positionData> &positionDatasVec,
+		vector<cl_int> &numTradesInIntervalVec, bool snapshotting, Mode mode) {
 	size_t currIdx = newStart;
 
 	cl_int err;
@@ -233,29 +257,41 @@ int processTradesWithIndicators(
 			cout << "Error for enqueueWriteBuffer inputTrades: " << err << endl;
 			return -1;
 		}
-		err =
-				queue.enqueueWriteBuffer(indicatorBuffer, CL_FALSE, 0,
-																 currSize * sizeof(indicators), &inds[currIdx]);
-		if (err != CL_SUCCESS) {
-			cout << "Error for enqueueWriteBuffer indicatorBuffer: " << err << endl;
-			return -1;
-		}
 		err = queue.enqueueWriteBuffer(inputSize, CL_FALSE, 0, sizeof(int),
 																	 &currSize);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueWriteBuffer inputSize: " << err << endl;
 			return -1;
 		}
+
+		switch (mode) {
+		case Mode::Volume:
+		case Mode::VolumeDelta:
+		case Mode::VolumeExit:
+		case Mode::AllVolume:
+		case Mode::VolumeTrend:
+			err = queue.enqueueWriteBuffer(indicatorBuffer, CL_FALSE, 0,
+																		 currSize * sizeof(indicators),
+																		 &inds[currIdx]);
+			if (err != CL_SUCCESS) {
+				cout << "Error for enqueueWriteBuffer indicatorBuffer: " << err << endl;
+				return -1;
+			}
+			break;
+		case Mode::Trend:
+			break;
+		}
+
 		cout << "Running trades " << currIdx << "-" << currIdx + currSize - 1
 				 << " (" << globalIdx << "-" << globalIdx + currSize - 1 << ")" << endl;
 		err = queue.enqueueNDRangeKernel(kernel, cl::NullRange,
-																		 cl::NDRange(comboVec.size()));
+																		 cl::NDRange(numCombos));
 		if (err != CL_SUCCESS) {
-			cout << "Error for volKernel: " << err << endl;
+			cout << "Error for kernel: " << err << endl;
 			return -1;
 		}
 		err = queue.enqueueReadBuffer(numTradesInIntervalBuf, CL_FALSE, 0,
-																	comboVec.size() * sizeof(cl_int),
+																	numCombos * sizeof(cl_int),
 																	&numTradesInIntervalVec[0]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueReadBuffer numTradesInIntervalBuf: " << err
@@ -305,26 +341,45 @@ int processTradesWithIndicators(
 
 	if (snapshotting) {
 		auto beforeSnapshotTime = high_resolution_clock::now();
-		err = queue.enqueueReadBuffer(
-				entries, CL_FALSE, 0, comboVec.size() * sizeof(entry), &entriesVec[0]);
+		err = queue.enqueueReadBuffer(entries, CL_FALSE, 0,
+																	numCombos * sizeof(entry), &entriesVec[0]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueReadBuffer entries: " << err << endl;
 			return -1;
 		}
 		err = queue.enqueueReadBuffer(tradeRecords, CL_FALSE, 0,
-																	comboVec.size() * sizeof(tradeRecord),
+																	numCombos * sizeof(tradeRecord),
 																	&tradeRecordsVec[0]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueReadBuffer tradeRecords: " << err << endl;
 			return -1;
 		}
+
+		switch (mode) {
+		case Mode::Volume:
+		case Mode::VolumeDelta:
+		case Mode::VolumeExit:
+		case Mode::AllVolume:
+			break;
+		case Mode::Trend:
+		case Mode::VolumeTrend:
+			err = queue.enqueueReadBuffer(positionDatas, CL_FALSE, 0,
+																		numCombos * sizeof(positionDatas),
+																		&positionDatasVec[0]);
+			if (err != CL_SUCCESS) {
+				cout << "Error for enqueueReadBuffer positionDatas: " << err << endl;
+				return -1;
+			}
+			break;
+		}
+
 		err = queue.finish();
 		if (err != CL_SUCCESS) {
 			cout << "Error for finish: " << err << endl;
 			return -1;
 		}
 		saveSnapshot(globalIdx, newStart, entriesVec, tradeRecordsVec,
-								 numTradesInIntervalVec);
+								 positionDatasVec, numTradesInIntervalVec, mode);
 		auto duration = duration_cast<microseconds>(high_resolution_clock::now() -
 																								beforeSnapshotTime);
 		cout << "Time taken to take snapshot: "
@@ -337,20 +392,21 @@ int processTradesWithIndicators(
 void processTradesWithOnlineAlgs(
 		const cl::CommandQueue &queue, const cl::Kernel &kernel,
 		vector<tradeWithoutDate> &tradesWithoutDates, vector<indicators> &inds,
-		vector<timeWindow> &tws, const vector<combo> &comboVec,
-		const cl::Buffer &inputTrades, const cl::Buffer &indicatorBuffer,
-		const cl::Buffer &inputSize, const cl::Buffer &entries,
-		const cl::Buffer &tradeRecords, const cl::Buffer &drawdownsBuf,
-		const cl::Buffer &drawdownLengthsBuf, const cl::Buffer &lossStreaksBuf,
-		const cl::Buffer &tradeDurationsBuf, const cl::Buffer &monthlyReturnsBuf,
-		const cl::Buffer &winsBuf, const cl::Buffer &lossesBuf,
-		vector<entry> &entriesVec, vector<tradeRecord> &tradeRecordsVec,
-		vector<drawdowns> &drawdownsVec,
+		vector<timeWindow> &tws, const size_t numCombos,
+		const cl::Buffer &inputTrades, const cl::Buffer &inputSize,
+		const cl::Buffer &entries, const cl::Buffer &tradeRecords,
+		const cl::Buffer &indicatorBuffer, const cl::Buffer &positionDatas,
+		const cl::Buffer &drawdownsBuf, const cl::Buffer &drawdownLengthsBuf,
+		const cl::Buffer &lossStreaksBuf, const cl::Buffer &tradeDurationsBuf,
+		const cl::Buffer &monthlyReturnsBuf, const cl::Buffer &winsBuf,
+		const cl::Buffer &lossesBuf, vector<entry> &entriesVec,
+		vector<tradeRecord> &tradeRecordsVec,
+		vector<positionData> &positionDatasVec, vector<drawdowns> &drawdownsVec,
 		vector<drawdownLengths> &drawdownLengthsVec,
 		vector<lossStreaks> &lossStreaksVec,
 		vector<tradeDurations> &tradeDurationsVec,
 		vector<monthlyReturns> &monthlyReturnsVec, vector<wins> &winsVec,
-		vector<losses> &lossesVec, bool snapshotting) {
+		vector<losses> &lossesVec, bool snapshotting, Mode mode) {
 	size_t currIdx = newStart;
 
 	cl_int err;
@@ -366,25 +422,37 @@ void processTradesWithOnlineAlgs(
 			cout << "Error for enqueueWriteBuffer inputTrades: " << err << endl;
 			return;
 		}
-		err =
-				queue.enqueueWriteBuffer(indicatorBuffer, CL_FALSE, 0,
-																 currSize * sizeof(indicators), &inds[currIdx]);
-		if (err != CL_SUCCESS) {
-			cout << "Error for enqueueWriteBuffer indicatorBuffer: " << err << endl;
-			return;
-		}
 		err = queue.enqueueWriteBuffer(inputSize, CL_FALSE, 0, sizeof(int),
 																	 &currSize);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueWriteBuffer inputSize: " << err << endl;
 			return;
 		}
+
+		switch (mode) {
+		case Mode::Volume:
+		case Mode::VolumeDelta:
+		case Mode::VolumeExit:
+		case Mode::AllVolume:
+		case Mode::VolumeTrend:
+			err = queue.enqueueWriteBuffer(indicatorBuffer, CL_FALSE, 0,
+																		 currSize * sizeof(indicators),
+																		 &inds[currIdx]);
+			if (err != CL_SUCCESS) {
+				cout << "Error for enqueueWriteBuffer indicatorBuffer: " << err << endl;
+				return;
+			}
+			break;
+		case Mode::Trend:
+			break;
+		}
+
 		cout << "Running trades " << currIdx << "-" << currIdx + currSize - 1
 				 << " (" << globalIdx << "-" << globalIdx + currSize - 1 << ")" << endl;
 		err = queue.enqueueNDRangeKernel(kernel, cl::NullRange,
-																		 cl::NDRange(comboVec.size()));
+																		 cl::NDRange(numCombos));
 		if (err != CL_SUCCESS) {
-			cout << "Error for volKernel: " << err << endl;
+			cout << "Error for kernel: " << err << endl;
 			return;
 		}
 
@@ -423,63 +491,81 @@ void processTradesWithOnlineAlgs(
 
 	if (snapshotting) {
 		auto beforeSnapshotTime = high_resolution_clock::now();
-		err = queue.enqueueReadBuffer(
-				entries, CL_FALSE, 0, comboVec.size() * sizeof(entry), &entriesVec[0]);
+		err = queue.enqueueReadBuffer(entries, CL_FALSE, 0,
+																	numCombos * sizeof(entry), &entriesVec[0]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueReadBuffer entries: " << err << endl;
 			return;
 		}
 		err = queue.enqueueReadBuffer(tradeRecords, CL_FALSE, 0,
-																	comboVec.size() * sizeof(tradeRecord),
+																	numCombos * sizeof(tradeRecord),
 																	&tradeRecordsVec[0]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueReadBuffer tradeRecords: " << err << endl;
 			return;
 		}
+
+		switch (mode) {
+		case Mode::Volume:
+		case Mode::VolumeDelta:
+		case Mode::VolumeExit:
+		case Mode::AllVolume:
+			break;
+		case Mode::Trend:
+		case Mode::VolumeTrend:
+			err = queue.enqueueReadBuffer(positionDatas, CL_FALSE, 0,
+																		numCombos * sizeof(positionDatas),
+																		&positionDatasVec[0]);
+			if (err != CL_SUCCESS) {
+				cout << "Error for enqueueReadBuffer positionDatas: " << err << endl;
+				return;
+			}
+			break;
+		}
+
 		err = queue.enqueueReadBuffer(drawdownsBuf, CL_FALSE, 0,
-																	comboVec.size() * sizeof(drawdowns),
+																	numCombos * sizeof(drawdowns),
 																	&drawdownsVec[0]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueReadBuffer drawdownsBuf: " << err << endl;
 			return;
 		}
 		err = queue.enqueueReadBuffer(drawdownLengthsBuf, CL_FALSE, 0,
-																	comboVec.size() * sizeof(drawdownLengths),
+																	numCombos * sizeof(drawdownLengths),
 																	&drawdownLengthsVec[0]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueReadBuffer drawdownLengthsBuf: " << err << endl;
 			return;
 		}
 		err = queue.enqueueReadBuffer(lossStreaksBuf, CL_FALSE, 0,
-																	comboVec.size() * sizeof(lossStreaks),
+																	numCombos * sizeof(lossStreaks),
 																	&lossStreaksVec[0]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueReadBuffer lossStreaksBuf: " << err << endl;
 			return;
 		}
 		err = queue.enqueueReadBuffer(tradeDurationsBuf, CL_FALSE, 0,
-																	comboVec.size() * sizeof(tradeDurations),
+																	numCombos * sizeof(tradeDurations),
 																	&tradeDurationsVec[0]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueReadBuffer tradeDurationsBuf: " << err << endl;
 			return;
 		}
 		err = queue.enqueueReadBuffer(monthlyReturnsBuf, CL_FALSE, 0,
-																	comboVec.size() * sizeof(monthlyReturns),
+																	numCombos * sizeof(monthlyReturns),
 																	&monthlyReturnsVec[0]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueReadBuffer monthlyReturnsBuf: " << err << endl;
 			return;
 		}
-		err = queue.enqueueReadBuffer(
-				winsBuf, CL_FALSE, 0, comboVec.size() * sizeof(winsBuf), &winsVec[0]);
+		err = queue.enqueueReadBuffer(winsBuf, CL_FALSE, 0,
+																	numCombos * sizeof(winsBuf), &winsVec[0]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueReadBuffer winsBuf: " << err << endl;
 			return;
 		}
 		err = queue.enqueueReadBuffer(lossesBuf, CL_FALSE, 0,
-																	comboVec.size() * sizeof(lossesBuf),
-																	&lossesVec[0]);
+																	numCombos * sizeof(lossesBuf), &lossesVec[0]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueReadBuffer lossesBuf: " << err << endl;
 			return;
@@ -489,9 +575,10 @@ void processTradesWithOnlineAlgs(
 			cout << "Error for finish: " << err << endl;
 			return;
 		}
-		saveSnapshot(globalIdx, newStart, entriesVec, tradeRecordsVec, drawdownsVec,
-								 drawdownLengthsVec, lossStreaksVec, tradeDurationsVec,
-								 monthlyReturnsVec, winsVec, lossesVec);
+		saveSnapshot(globalIdx, newStart, entriesVec, tradeRecordsVec,
+								 positionDatasVec, drawdownsVec, drawdownLengthsVec,
+								 lossStreaksVec, tradeDurationsVec, monthlyReturnsVec, winsVec,
+								 lossesVec, mode);
 		auto duration = duration_cast<microseconds>(high_resolution_clock::now() -
 																								beforeSnapshotTime);
 		cout << "Time taken to take snapshot: "
@@ -501,136 +588,16 @@ void processTradesWithOnlineAlgs(
 	return;
 }
 
-void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
-									 const vector<tradeRecord> &tradeRecordsVec,
-									 const vector<perfMetrics> &allPerfMetrics, bool listTrades) {
-	os << fixed;
-	os << "Combo index: " << idx << endl;
-	os << "Annualized return: " << tradeRecordsVec[idx].capital << endl;
-	os << "Target: " << format("{:.2f}", (double)comboVec[idx].target) << endl;
-	os << "Stop loss: " << format("{:.2f}", (double)comboVec[idx].stopLoss)
-		 << endl;
-	os << "Window: " << comboVec[idx].window / ONE_MINUTE_MICROSECONDS
-		 << " minutes" << endl;
-	os << "Buy volume delta threshold: " << comboVec[idx].buyVolDeltaPercentile
-		 << endl;
-	os << "Sell volume delta threshold: " << comboVec[idx].sellVolDeltaPercentile
-		 << endl;
-	os << "Total trades: "
-		 << tradeRecordsVec[idx].shorts + tradeRecordsVec[idx].longs << endl;
-	os << "Wins: "
-		 << tradeRecordsVec[idx].shortWins + tradeRecordsVec[idx].longWins << endl;
-	os << "Losses: "
-		 << tradeRecordsVec[idx].shortLosses + tradeRecordsVec[idx].longLosses
-		 << endl;
-	os << "Longs: " << tradeRecordsVec[idx].longs << endl;
-	os << "Long wins: " << tradeRecordsVec[idx].longWins << endl;
-	os << "Long losses: " << tradeRecordsVec[idx].longLosses << endl;
-	os << "Shorts: " << tradeRecordsVec[idx].shorts << endl;
-	os << "Short wins: " << tradeRecordsVec[idx].shortWins << endl;
-	os << "Short losses: " << tradeRecordsVec[idx].shortLosses << endl;
-
-	if (listTrades) {
-		os << "Sharpe ratio: " << allPerfMetrics[idx].sharpe << endl;
-		os << "Average drawdown: " << allPerfMetrics[idx].avgDrawdown << endl;
-		os << "Max drawdown: " << allPerfMetrics[idx].maxDrawdown << endl;
-		os << "Average loss streak: " << allPerfMetrics[idx].avgLossStreak << endl;
-		os << "Max loss streak: " << allPerfMetrics[idx].maxLossStreak << endl;
-		os << "Average drawdown length: " << allPerfMetrics[idx].avgDrawdownLength
-			 << endl;
-		os << "Max drawdown length: " << allPerfMetrics[idx].maxDrawdownLength
-			 << endl;
-		os << "Average trade duration: " << allPerfMetrics[idx].avgTradeDuration
-			 << endl;
-		os << "Max trade duration: " << allPerfMetrics[idx].maxTradeDuration
-			 << endl;
-	}
-	os << defaultfloat;
-}
-
-void outputMetrics(ostream &os, size_t idx, const vector<combo> &comboVec,
-									 const vector<tradeRecord> &tradeRecordsVec,
-									 const vector<perfMetrics> &allPerfMetrics,
-									 const vector<drawdowns> &drawdownsVec,
-									 const vector<drawdownLengths> &drawdownLengthsVec,
-									 const vector<lossStreaks> &lossStreaksVec,
-									 const vector<tradeDurations> &tradeDurationsVec,
-									 const vector<wins> &winsVec, const vector<losses> &lossesVec,
-									 bool listTrades) {
-	os << fixed;
-	os << "Combo index: " << idx << endl;
-	os << "Annualized return: " << tradeRecordsVec[idx].capital << endl;
-	os << "Target: " << format("{:.2f}", (double)comboVec[idx].target) << endl;
-	os << "Stop loss: " << format("{:.2f}", (double)comboVec[idx].stopLoss)
-		 << endl;
-	os << "Window: " << comboVec[idx].window / ONE_MINUTE_MICROSECONDS
-		 << " minutes" << endl;
-	os << "Buy volume delta threshold: " << comboVec[idx].buyVolDeltaPercentile
-		 << endl;
-	os << "Sell volume delta threshold: " << comboVec[idx].sellVolDeltaPercentile
-		 << endl;
-	os << "Total trades: "
-		 << tradeRecordsVec[idx].shorts + tradeRecordsVec[idx].longs << endl;
-	os << "Wins: "
-		 << tradeRecordsVec[idx].shortWins + tradeRecordsVec[idx].longWins << endl;
-	os << "Losses: "
-		 << tradeRecordsVec[idx].shortLosses + tradeRecordsVec[idx].longLosses
-		 << endl;
-	os << "Longs: " << tradeRecordsVec[idx].longs << endl;
-	os << "Long wins: " << tradeRecordsVec[idx].longWins << endl;
-	os << "Long losses: " << tradeRecordsVec[idx].longLosses << endl;
-	os << "Shorts: " << tradeRecordsVec[idx].shorts << endl;
-	os << "Short wins: " << tradeRecordsVec[idx].shortWins << endl;
-	os << "Short losses: " << tradeRecordsVec[idx].shortLosses << endl;
-
-	if (listTrades) {
-		os << "Sharpe ratio: " << allPerfMetrics[idx].sharpe << endl;
-		os << "Average win margin: " << winsVec[idx].mean << endl;
-		os << "Win margin standard deviation: "
-			 << sqrt(winsVec[idx].m2 / (winsVec[idx].n - 1)) << endl;
-		os << "Average loss margin: " << lossesVec[idx].mean << endl;
-		os << "Loss margin standard deviation: "
-			 << sqrt(lossesVec[idx].m2 / (lossesVec[idx].n - 1)) << endl;
-		os << "Average drawdown: " << drawdownsVec[idx].mean << endl;
-		os << "Drawdown standard deviation: "
-			 << sqrt(drawdownsVec[idx].m2 / (drawdownsVec[idx].n - 1)) << endl;
-		os << "Max drawdown: " << drawdownsVec[idx].max << endl;
-		os << "Average loss streak: " << lossStreaksVec[idx].mean << endl;
-		os << "Loss streak standard deviation: "
-			 << sqrt(lossStreaksVec[idx].m2 / (lossStreaksVec[idx].n - 1)) << endl;
-		os << "Max loss streak: " << lossStreaksVec[idx].max << endl;
-		os << "Average drawdown length: "
-			 << drawdownLengthsVec[idx].mean / (double)ONE_HOUR_MICROSECONDS
-			 << " hours" << endl;
-		os << "Drawdown length standard deviation: "
-			 << sqrt(drawdownLengthsVec[idx].m2 / (lossStreaksVec[idx].n - 1)) /
-							(double)ONE_HOUR_MICROSECONDS
-			 << " hours" << endl;
-		os << "Max drawdown length: "
-			 << drawdownLengthsVec[idx].max / (double)ONE_HOUR_MICROSECONDS
-			 << " hours" << endl;
-		os << "Average trade duration: "
-			 << tradeDurationsVec[idx].mean / (double)ONE_MINUTE_MICROSECONDS
-			 << " minutes" << endl;
-		os << "Trade duration standard deviation: "
-			 << sqrt(tradeDurationsVec[idx].m2 / (tradeDurationsVec[idx].n - 1)) /
-							(double)ONE_MINUTE_MICROSECONDS
-			 << " minutes" << endl;
-		os << "Max trade duration: "
-			 << (double)tradeDurationsVec[idx].max / (double)ONE_MINUTE_MICROSECONDS
-			 << " minutes" << endl;
-	}
-	os << defaultfloat;
-}
-
 int main(int argc, char *argv[]) {
 	bool writeResults = false, listTrades = false, snapshotting = false,
 			 futures = false;
 
 	bool isBTC;
+	Mode mode;
+	string modeString;
 
 	int opt;
-	while ((opt = getopt(argc, argv, "wlsf")) != -1) {
+	while ((opt = getopt(argc, argv, ":wlsft:")) != -1) {
 		switch (opt) {
 		case 'w':
 			writeResults = true;
@@ -648,6 +615,23 @@ int main(int argc, char *argv[]) {
 			futures = true;
 			cout << "Enabled futures" << endl;
 			break;
+		case 't': {
+			auto it = modeMap.find(optarg);
+			if (it == modeMap.end()) {
+				cout << "Invalid mode: " << optarg << endl;
+				exit(EXIT_FAILURE);
+			}
+			mode = it->second;
+			modeString = optarg;
+			modeString[0] =
+					static_cast<char>(toupper(static_cast<unsigned char>(modeString[0])));
+			cout << "Using mode: " << optarg << endl;
+			break;
+		}
+		case ':':
+			cout << "Option -" << static_cast<char>(optopt) << " requires an argument"
+					 << endl;
+			exit(EXIT_FAILURE);
 		case '?':
 			cout << "Got unknown option: " << (char)optopt << endl;
 			exit(EXIT_FAILURE);
@@ -681,12 +665,13 @@ int main(int argc, char *argv[]) {
 											lastDateLastPeriod - lastDateSecondUnderscore - 1);
 
 	string symbol(argv[optind]);
+	snapshotFilename = "snapshot" + modeString;
 	if (symbol.find("BTC") != string::npos) {
 		isBTC = true;
-		snapshotFilename = "snapshotVolDeltaBTC";
+		snapshotFilename += "BTC";
 	} else {
 		isBTC = false;
-		snapshotFilename = "snapshotVolDeltaETH";
+		snapshotFilename += "ETH";
 	}
 	if (futures)
 		snapshotFilename += "Futures";
@@ -718,9 +703,58 @@ int main(int argc, char *argv[]) {
 	x = 0;
 	generate(targets.begin(), targets.end(), [x]() mutable { return x += 0.25; });
 
-	vector<vector<double>> volDeltaPercentiles;
+	vector<double> entryThresholds(20);
+	x = 0;
+	generate(entryThresholds.begin(), entryThresholds.end(),
+					 [x]() mutable { return x += 0.05; });
+
+	vector<vector<double>> buyVolPercentiles;
+	vector<vector<double>> sellVolPercentiles;
+	vector<vector<double>> deltaVolPercentiles;
 
 	ifstream myFile;
+	if (isBTC)
+		myFile.open("buyPercentilesDollarsBTC");
+	else
+		myFile.open("buyPercentilesDollarsETH");
+	if (myFile.is_open()) {
+		string line;
+		while (getline(myFile, line)) {
+			vector<string> splits = split(line);
+			vector<double> rowPercentiles;
+			for (string s : splits) {
+				rowPercentiles.emplace_back(stod(s));
+			}
+			rowPercentiles.erase(rowPercentiles.begin() + PERCENTILE_CEILING,
+													 rowPercentiles.end());
+			rowPercentiles.erase(rowPercentiles.begin(),
+													 rowPercentiles.begin() + PERCENTILE_FLOOR);
+			buyVolPercentiles.emplace_back(rowPercentiles);
+		}
+		myFile.close();
+	}
+
+	if (isBTC)
+		myFile.open("sellPercentilesDollarsBTC");
+	else
+		myFile.open("sellPercentilesDollarsETH");
+	if (myFile.is_open()) {
+		string line;
+		while (getline(myFile, line)) {
+			vector<string> splits = split(line);
+			vector<double> rowPercentiles;
+			for (string s : splits) {
+				rowPercentiles.emplace_back(stod(s));
+			}
+			rowPercentiles.erase(rowPercentiles.begin() + PERCENTILE_CEILING,
+													 rowPercentiles.end());
+			rowPercentiles.erase(rowPercentiles.begin(),
+													 rowPercentiles.begin() + PERCENTILE_FLOOR);
+			sellVolPercentiles.emplace_back(rowPercentiles);
+		}
+		myFile.close();
+	}
+
 	if (isBTC)
 		myFile.open("deltaPercentilesDollarsBTC");
 	else
@@ -733,7 +767,7 @@ int main(int argc, char *argv[]) {
 			for (string s : splits) {
 				rowPercentiles.emplace_back(stod(s));
 			}
-			volDeltaPercentiles.emplace_back(rowPercentiles);
+			deltaVolPercentiles.emplace_back(rowPercentiles);
 		}
 		myFile.close();
 	}
@@ -742,72 +776,273 @@ int main(int argc, char *argv[]) {
 	for (int i = 0; i < NUM_WINDOWS; i++) {
 		indWindows[i] = vector<long long>(1, windows[i]);
 	}
-	auto firstCombo =
-			cartesian_product(indWindows[0], volDeltaPercentiles[0],
-												volDeltaPercentiles[0], stopLosses, targets);
-	vector<decltype(firstCombo)> combos;
-	combos.emplace_back(firstCombo);
 
-	for (int i = 1; i < NUM_WINDOWS; i++) {
-		combos.emplace_back(cartesian_product(indWindows[i], volDeltaPercentiles[i],
-																					volDeltaPercentiles[i], stopLosses,
-																					targets));
+	ComboVec comboVec;
+	size_t comboVecSize;
+	size_t numCombos;
+
+	switch (mode) {
+	case Mode::Volume:
+		comboVec = vector<comboVol>{};
+		break;
+	case Mode::VolumeDelta:
+		comboVec = vector<comboVolDelta>{};
+		break;
+	case Mode::VolumeExit:
+		comboVec = vector<comboVolExit>{};
+		break;
+	case Mode::AllVolume:
+		comboVec = vector<comboAllVol>{};
+		break;
+	case Mode::Trend:
+		comboVec = vector<comboTrend>{};
+		break;
+	case Mode::VolumeTrend:
+		comboVec = vector<comboVolTrend>{};
+		break;
 	}
 
-	vector<combo> comboVec;
+	auto visitor = [&indWindows, &buyVolPercentiles, &sellVolPercentiles,
+									&stopLosses, &targets, &deltaVolPercentiles, &entryThresholds,
+									&comboVecSize, &numCombos](auto &comboVec) {
+		using T = typename decay_t<decltype(comboVec)>::value_type;
+		if constexpr (is_same_v<T, comboVol>) {
+			auto firstCombo =
+					cartesian_product(indWindows[0], buyVolPercentiles[0],
+														sellVolPercentiles[0], stopLosses, targets);
+			vector<decltype(firstCombo)> combos;
+			combos.emplace_back(firstCombo);
 
-	for (int i = 0; i < NUM_WINDOWS; i++) {
-		for (unsigned int j = 0; j < combos[i].size(); j++) {
-			combo c = {get<0>(combos[i][j]), get<1>(combos[i][j]),
-								 get<2>(combos[i][j]), get<3>(combos[i][j]),
-								 get<4>(combos[i][j])};
-			// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
-			// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
-			if (c.stopLoss < c.target + 1.1 &&
-					c.buyVolDeltaPercentile >= c.sellVolDeltaPercentile)
-				comboVec.emplace_back(c);
+			for (int i = 1; i < NUM_WINDOWS; i++) {
+				combos.emplace_back(
+						cartesian_product(indWindows[i], buyVolPercentiles[i],
+															sellVolPercentiles[i], stopLosses, targets));
+			}
+
+			for (int i = 0; i < NUM_WINDOWS; i++) {
+				for (unsigned int j = 0; j < combos[i].size(); j++) {
+					comboVol c = {get<0>(combos[i][j]), get<1>(combos[i][j]),
+												get<2>(combos[i][j]), get<3>(combos[i][j]),
+												get<4>(combos[i][j])};
+					// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
+					// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
+					if (c.stopLoss < c.target + 1.1)
+						comboVec.emplace_back(c);
+				}
+			}
+			comboVecSize = comboVec.size() * sizeof(comboVol);
+		} else if constexpr (is_same_v<T, comboVolDelta>) {
+			auto firstCombo =
+					cartesian_product(indWindows[0], deltaVolPercentiles[0],
+														deltaVolPercentiles[0], stopLosses, targets);
+			vector<decltype(firstCombo)> combos;
+			combos.emplace_back(firstCombo);
+
+			for (int i = 1; i < NUM_WINDOWS; i++) {
+				combos.emplace_back(
+						cartesian_product(indWindows[i], deltaVolPercentiles[i],
+															deltaVolPercentiles[i], stopLosses, targets));
+			}
+
+			for (int i = 0; i < NUM_WINDOWS; i++) {
+				for (unsigned int j = 0; j < combos[i].size(); j++) {
+					comboVolDelta c = {get<0>(combos[i][j]), get<1>(combos[i][j]),
+														 get<2>(combos[i][j]), get<3>(combos[i][j]),
+														 get<4>(combos[i][j])};
+					// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
+					// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
+					if (c.stopLoss < c.target + 1.1 &&
+							c.buyVolDeltaPercentile >= c.sellVolDeltaPercentile)
+						comboVec.emplace_back(c);
+				}
+			}
+			comboVecSize = comboVec.size() * sizeof(comboVolDelta);
+		} else if constexpr (is_same_v<T, comboVolExit>) {
+			auto firstCombo = cartesian_product(
+					indWindows[0], buyVolPercentiles[0], sellVolPercentiles[0],
+					buyVolPercentiles[0], sellVolPercentiles[0]);
+			vector<decltype(firstCombo)> combos;
+			combos.emplace_back(firstCombo);
+
+			for (int i = 1; i < NUM_WINDOWS; i++) {
+				combos.emplace_back(cartesian_product(
+						indWindows[i], buyVolPercentiles[i], sellVolPercentiles[i],
+						buyVolPercentiles[i], sellVolPercentiles[i]));
+			}
+
+			for (int i = 0; i < NUM_WINDOWS; i++) {
+				for (unsigned int j = 0; j < combos[i].size(); j++) {
+					comboVolExit c = {get<0>(combos[i][j]), get<1>(combos[i][j]),
+														get<2>(combos[i][j]), get<3>(combos[i][j]),
+														get<4>(combos[i][j])};
+					// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
+					// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
+					if (c.buyVolPercentile > c.buyVolExitPercentile &&
+							c.sellVolPercentile > c.sellVolExitPercentile)
+						comboVec.emplace_back(c);
+				}
+			}
+			comboVecSize = comboVec.size() * sizeof(comboVolExit);
+		} else if constexpr (is_same_v<T, comboAllVol>) {
+			auto firstCombo = cartesian_product(
+					indWindows[0], buyVolPercentiles[0], sellVolPercentiles[0],
+					deltaVolPercentiles[0], deltaVolPercentiles[0], stopLosses, targets);
+			vector<decltype(firstCombo)> combos;
+			combos.emplace_back(firstCombo);
+
+			for (int i = 1; i < NUM_WINDOWS; i++) {
+				combos.emplace_back(
+						cartesian_product(indWindows[i], buyVolPercentiles[i],
+															sellVolPercentiles[i], deltaVolPercentiles[i],
+															deltaVolPercentiles[i], stopLosses, targets));
+			}
+
+			for (int i = 0; i < NUM_WINDOWS; i++) {
+				for (unsigned int j = 0; j < combos[i].size(); j++) {
+					comboAllVol c = {get<0>(combos[i][j]), get<1>(combos[i][j]),
+													 get<2>(combos[i][j]), get<3>(combos[i][j]),
+													 get<4>(combos[i][j]), get<5>(combos[i][j]),
+													 get<6>(combos[i][j])};
+					// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
+					// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
+					if (c.stopLoss < c.target + 1.1 &&
+							c.buyVolPercentile >= c.buyVolDeltaPercentile &&
+							c.sellVolPercentile >= -c.sellVolDeltaPercentile &&
+							c.buyVolDeltaPercentile >= 0 && c.sellVolDeltaPercentile <= 0)
+						comboVec.emplace_back(c);
+				}
+			}
+			comboVecSize = comboVec.size() * sizeof(comboAllVol);
+		} else if constexpr (is_same_v<T, comboTrend>) {
+			auto combos = cartesian_product(entryThresholds, stopLosses, targets);
+
+			for (unsigned int j = 0; j < combos.size(); j++) {
+				comboTrend c = {get<0>(combos[j]), get<1>(combos[j]),
+												get<2>(combos[j])};
+				// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
+				// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
+				if (c.stopLoss < c.target + 1.1)
+					comboVec.emplace_back(c);
+			}
+			comboVecSize = comboVec.size() * sizeof(comboTrend);
+		} else if constexpr (is_same_v<T, comboVolTrend>) {
+			auto firstCombo = cartesian_product(indWindows[0], buyVolPercentiles[0],
+																					sellVolPercentiles[0],
+																					entryThresholds, stopLosses, targets);
+			vector<decltype(firstCombo)> combos;
+			combos.emplace_back(firstCombo);
+
+			for (int i = 1; i < NUM_WINDOWS; i++) {
+				combos.emplace_back(cartesian_product(
+						indWindows[i], buyVolPercentiles[i], sellVolPercentiles[i],
+						entryThresholds, stopLosses, targets));
+			}
+
+			for (int i = 0; i < NUM_WINDOWS; i++) {
+				for (unsigned int j = 0; j < combos[i].size(); j++) {
+					comboVolTrend c = {get<0>(combos[i][j]), get<1>(combos[i][j]),
+														 get<2>(combos[i][j]), get<3>(combos[i][j]),
+														 get<4>(combos[i][j]), get<5>(combos[i][j])};
+					// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
+					// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
+					if (c.stopLoss < c.target + 1.1)
+						comboVec.emplace_back(c);
+				}
+			}
+			comboVecSize = comboVec.size() * sizeof(comboVolTrend);
 		}
-	}
-	size_t comboVecSize = comboVec.size() * sizeof(combo);
 
-	initializeDevice("vol-delta-trader.cl");
+		numCombos = comboVec.size();
+	};
+
+	visit(visitor, comboVec);
+
+	initializeDevice("trader.cl");
+
+	vector<positionData> positionDatasVec;
+	size_t positionDatasVecSize = 0;
+
+	switch (mode) {
+	case Mode::Volume:
+	case Mode::VolumeDelta:
+	case Mode::VolumeExit:
+	case Mode::AllVolume:
+		break;
+	case Mode::Trend:
+	case Mode::VolumeTrend:
+		positionDatasVec = vector<positionData>(numCombos, {0.0, 0.0, 0});
+		positionDatasVecSize = numCombos * sizeof(positionData);
+		break;
+	}
 
 	bool initializedPositions = false;
 
-	vector<entry> entriesVec(comboVec.size(), {0.0, 0});
+	vector<entry> entriesVec(numCombos, {0.0, 0});
 	size_t entriesVecSize = entriesVec.size() * sizeof(entry);
-	vector<tradeRecord> tradeRecordsVec(comboVec.size(),
+	vector<tradeRecord> tradeRecordsVec(numCombos,
 																			{STARTING_CAPITAL, 0, 0, 0, 0, 0, 0});
 	size_t tradeRecordsVecSize = tradeRecordsVec.size() * sizeof(tradeRecord);
 
 	ifstream snapshotFile;
+	bool existingSnapshot;
 	if (snapshotting) {
 		snapshotFile.open(snapshotFilename, ios::binary);
 		if (snapshotFile.good()) {
+			existingSnapshot = true;
 			if (!snapshotFile.read(reinterpret_cast<char *>(&globalIdx),
 														 sizeof(globalIdx))) {
 				cout << "Failed to read previous index" << endl;
 				return 1;
 			}
 			cout << "globalIdx: " << globalIdx << endl;
-			if (!snapshotFile.read(reinterpret_cast<char *>(&newStart),
-														 sizeof(newStart))) {
-				cout << "Failed to read new start" << endl;
-				return 1;
+
+			switch (mode) {
+			case Mode::Volume:
+			case Mode::VolumeDelta:
+			case Mode::VolumeExit:
+			case Mode::AllVolume:
+			case Mode::VolumeTrend:
+				if (!snapshotFile.read(reinterpret_cast<char *>(&newStart),
+															 sizeof(newStart))) {
+					cout << "Failed to read new start" << endl;
+					return 1;
+				}
+				cout << "newStart: " << newStart << endl;
+				break;
+			case Mode::Trend:
+				break;
 			}
-			cout << "newStart: " << newStart << endl;
+
 			if (!snapshotFile.read(reinterpret_cast<char *>(entriesVec.data()),
-														 comboVec.size() * sizeof(entry))) {
+														 numCombos * sizeof(entry))) {
 				cout << "Failed to read entries" << endl;
 				return 1;
 			}
 			if (!snapshotFile.read(reinterpret_cast<char *>(tradeRecordsVec.data()),
-														 comboVec.size() * sizeof(tradeRecord))) {
+														 numCombos * sizeof(tradeRecord))) {
 				cout << "Failed to read trade records" << endl;
 				return 1;
 			}
+
+			switch (mode) {
+			case Mode::Volume:
+			case Mode::VolumeDelta:
+			case Mode::VolumeExit:
+			case Mode::AllVolume:
+				break;
+			case Mode::Trend:
+			case Mode::VolumeTrend:
+				if (!snapshotFile.read(
+								reinterpret_cast<char *>(positionDatasVec.data()),
+								numCombos * sizeof(positionData))) {
+					cout << "Failed to read position datas" << endl;
+					return 1;
+				}
+				break;
+			}
 		} else {
 			cout << "No snapshot file detected" << endl;
+			existingSnapshot = false;
 		}
 	}
 
@@ -821,25 +1056,101 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
-	cl::Kernel volKernel;
-	if (listTrades) {
-		// volKernel = cl::Kernel(program, "volTraderWithTradesAndIndicators",
-		// &err);
-		if (futures)
-			volKernel = cl::Kernel(program, "volTraderFuturesWithOnlineAlgs", &err);
-		else
-			volKernel = cl::Kernel(program, "volTraderWithOnlineAlgs", &err);
-	} else {
-		// volKernel = cl::Kernel(program, "volTrader", &err);
-		if (futures)
-			volKernel = cl::Kernel(program, "volTraderFuturesWithIndicators", &err);
-		else
-			volKernel = cl::Kernel(program, "volTraderWithIndicators", &err);
+	cl::Kernel kernel;
+
+	switch (mode) {
+	case Mode::Volume:
+		if (listTrades) {
+			if (futures)
+				kernel = cl::Kernel(program, "volTraderFuturesWithOnlineAlgs", &err);
+			else
+				kernel = cl::Kernel(program, "volTraderWithOnlineAlgs", &err);
+		} else {
+			if (futures)
+				kernel = cl::Kernel(program, "volTraderFutures", &err);
+			else
+				kernel = cl::Kernel(program, "volTrader", &err);
+		}
+		break;
+	case Mode::VolumeDelta:
+		if (listTrades) {
+			if (futures)
+				kernel =
+						cl::Kernel(program, "volDeltaTraderFuturesWithOnlineAlgs", &err);
+			else
+				kernel = cl::Kernel(program, "volDeltaTraderWithOnlineAlgs", &err);
+		} else {
+			if (futures)
+				kernel = cl::Kernel(program, "volDeltaTraderFutures", &err);
+			else
+				kernel = cl::Kernel(program, "volDeltaTrader", &err);
+		}
+		break;
+	case Mode::VolumeExit:
+		if (listTrades) {
+			if (futures)
+				kernel =
+						cl::Kernel(program, "volExitTraderFuturesWithOnlineAlgs", &err);
+			else
+				kernel = cl::Kernel(program, "volExitTraderWithOnlineAlgs", &err);
+		} else {
+			if (futures)
+				kernel = cl::Kernel(program, "volExitTraderFutures", &err);
+			else
+				kernel = cl::Kernel(program, "volExitTrader", &err);
+		}
+		break;
+	case Mode::AllVolume:
+		if (listTrades) {
+			if (futures)
+				kernel = cl::Kernel(program, "allVolFuturesWithOnlineAlgs", &err);
+			else
+				kernel = cl::Kernel(program, "allVolWithOnlineAlgs", &err);
+		} else {
+			if (futures)
+				kernel = cl::Kernel(program, "allVolFutures", &err);
+			else
+				kernel = cl::Kernel(program, "allVol", &err);
+		}
+		break;
+	case Mode::Trend:
+		if (listTrades) {
+			if (futures)
+				kernel =
+						cl::Kernel(program, "trendFollowerFuturesWithOnlineAlgs", &err);
+			else
+				kernel = cl::Kernel(program, "trendFollowerWithOnlineAlgs", &err);
+		} else {
+			if (futures)
+				kernel = cl::Kernel(program, "trendFollowerFutures", &err);
+			else
+				kernel = cl::Kernel(program, "trendFollower", &err);
+		}
+		break;
+	case Mode::VolumeTrend:
+		if (listTrades) {
+			if (futures)
+				kernel =
+						cl::Kernel(program, "volTrendTraderFuturesWithOnlineAlgs", &err);
+			else
+				kernel = cl::Kernel(program, "volTrendTraderWithOnlineAlgs", &err);
+		} else {
+			if (futures)
+				kernel = cl::Kernel(program, "volTrendTraderFutures", &err);
+			else
+				kernel = cl::Kernel(program, "volTrendTrader", &err);
+		}
+		break;
 	}
+
 	if (err != CL_SUCCESS) {
 		cout << "Error for creating kernel: " << err << endl;
 		return 1;
 	}
+
+	void *ptr =
+			visit([](auto &vec) -> void * { return static_cast<void *>(vec.data()); },
+						comboVec);
 
 	cl::Buffer inputTrades(context, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY,
 												 INCREMENT * sizeof(tradeWithoutDate), NULL, &err);
@@ -856,35 +1167,72 @@ int main(int argc, char *argv[]) {
 	}
 	cl::Buffer inputCombos(
 			context, CL_MEM_READ_ONLY | CL_MEM_HOST_NO_ACCESS | CL_MEM_COPY_HOST_PTR,
-			comboVec.size() * sizeof(combo), &comboVec[0], &err);
+			comboVecSize, ptr, &err);
 	if (err != CL_SUCCESS) {
 		cout << "Error for inputCombos: " << err << endl;
 		return 1;
 	}
 	cl::Buffer entries(
 			context, CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-			comboVec.size() * sizeof(entry), &entriesVec[0], &err);
+			numCombos * sizeof(entry), &entriesVec[0], &err);
 	if (err != CL_SUCCESS) {
 		cout << "Error for entries: " << err << endl;
 		return 1;
 	}
 	cl::Buffer tradeRecords(
 			context, CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-			comboVec.size() * sizeof(tradeRecord), &tradeRecordsVec[0], &err);
+			numCombos * sizeof(tradeRecord), &tradeRecordsVec[0], &err);
 	if (err != CL_SUCCESS) {
 		cout << "Error for tradeRecords: " << err << endl;
 		return 1;
 	}
-	cl::Buffer indicatorBuffer(context, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY,
-														 INCREMENT * sizeof(indicators), NULL, &err);
-	if (err != CL_SUCCESS) {
-		cout << "Error for indicatorBuffer: " << err << endl;
-		return 1;
-	}
-	size_t indicatorsSize = INCREMENT * sizeof(indicators);
 
-	vector<entryAndExit> entriesAndExitsVec;
-	cl::Buffer entriesAndExitsBuf;
+	cl::Buffer positionDatas, indicatorBuffer;
+	size_t indicatorsSize = 0;
+
+	switch (mode) {
+	case Mode::Volume:
+	case Mode::VolumeDelta:
+	case Mode::VolumeExit:
+	case Mode::AllVolume:
+		indicatorBuffer =
+				cl::Buffer(context, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY,
+									 INCREMENT * sizeof(indicators), NULL, &err);
+		if (err != CL_SUCCESS) {
+			cout << "Error for indicatorBuffer: " << err << endl;
+			return 1;
+		}
+		indicatorsSize = INCREMENT * sizeof(indicators);
+		break;
+	case Mode::Trend:
+		positionDatas = cl::Buffer(
+				context,
+				CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+				numCombos * sizeof(positionData), &positionDatasVec[0], &err);
+		if (err != CL_SUCCESS) {
+			cout << "Error for positionDatas: " << err << endl;
+			return 1;
+		}
+		break;
+	case Mode::VolumeTrend:
+		indicatorBuffer =
+				cl::Buffer(context, CL_MEM_READ_ONLY | CL_MEM_HOST_WRITE_ONLY,
+									 INCREMENT * sizeof(indicators), NULL, &err);
+		if (err != CL_SUCCESS) {
+			cout << "Error for indicatorBuffer: " << err << endl;
+			return 1;
+		}
+		indicatorsSize = INCREMENT * sizeof(indicators);
+		positionDatas = cl::Buffer(
+				context,
+				CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+				numCombos * sizeof(positionData), &positionDatasVec[0], &err);
+		if (err != CL_SUCCESS) {
+			cout << "Error for positionDatas: " << err << endl;
+			return 1;
+		}
+		break;
+	}
 
 	vector<drawdowns> drawdownsVec;
 	cl::Buffer drawdownsBuf;
@@ -904,84 +1252,83 @@ int main(int argc, char *argv[]) {
 	vector<cl_int> numTradesInIntervalVec;
 	cl::Buffer numTradesInIntervalBuf;
 
-	cout << "Number of combinations: " << comboVec.size() << endl;
+	cout << "Number of combinations: " << numCombos << endl;
 	cout << "Size of combinations: " << comboVecSize << endl;
 	cout << "Size of trades: " << inputTradesSize << endl;
 	cout << "Size of indicators: " << indicatorsSize << endl;
 	cout << "Size of entries: " << entriesVecSize << endl;
 	cout << "Size of trade records: " << tradeRecordsVecSize << endl;
+	cout << "Size of position datas: " << positionDatasVecSize << endl;
 	size_t totalSize = comboVecSize + inputTradesSize + indicatorsSize +
-										 entriesVecSize + tradeRecordsVecSize;
+										 entriesVecSize + tradeRecordsVecSize +
+										 positionDatasVecSize;
 	if (listTrades) {
 		drawdownsVec = vector<drawdowns>(
-				comboVec.size(), {0, 1.0, 0, 0, STARTING_CAPITAL, 1000000000, 0});
+				numCombos, {0, 1.0, 0, 0, STARTING_CAPITAL, 1000000000, 0});
 		size_t drawdownsVecSize = drawdownsVec.size() * sizeof(drawdowns);
 		cout << "Size of drawdowns: " << drawdownsVecSize << endl;
 
-		drawdownLengthsVec =
-				vector<drawdownLengths>(comboVec.size(), drawdownLengths{});
+		drawdownLengthsVec = vector<drawdownLengths>(numCombos, drawdownLengths{});
 		size_t drawdownLengthsVecSize =
 				drawdownLengthsVec.size() * sizeof(drawdownLengths);
 		cout << "Size of drawdown lengths: " << drawdownLengthsVecSize << endl;
 
-		lossStreaksVec = vector<lossStreaks>(comboVec.size(), lossStreaks{});
+		lossStreaksVec = vector<lossStreaks>(numCombos, lossStreaks{});
 		size_t lossStreaksVecSize = lossStreaksVec.size() * sizeof(lossStreaks);
 		cout << "Size of loss streaks: " << lossStreaksVecSize << endl;
 
-		tradeDurationsVec =
-				vector<tradeDurations>(comboVec.size(), tradeDurations{});
+		tradeDurationsVec = vector<tradeDurations>(numCombos, tradeDurations{});
 		size_t tradeDurationsVecSize =
 				tradeDurationsVec.size() * sizeof(tradeDurations);
 		cout << "Size of trade durations: " << tradeDurationsVecSize << endl;
 
-		monthlyReturnsVec =
-				vector<monthlyReturns>(comboVec.size(), monthlyReturns{});
+		monthlyReturnsVec = vector<monthlyReturns>(numCombos, monthlyReturns{});
 		size_t monthlyReturnsVecSize =
 				monthlyReturnsVec.size() * sizeof(monthlyReturns);
 		cout << "Size of monthly returns: " << monthlyReturnsVecSize << endl;
 
-		winsVec = vector<wins>(comboVec.size(), {0, 0, 0, 0, 1000000});
+		winsVec = vector<wins>(numCombos, {0, 0, 0, 0, 1000000});
 		size_t winsVecSize = winsVec.size() * sizeof(wins);
 		cout << "Size of wins: " << winsVecSize << endl;
 
-		lossesVec = vector<losses>(comboVec.size(), {0, 0, 0, 1000000, 0});
+		lossesVec = vector<losses>(numCombos, {0, 0, 0, 1000000, 0});
 		size_t lossesVecSize = lossesVec.size() * sizeof(losses);
 		cout << "Size of losses: " << lossesVecSize << endl;
 
 		if (snapshotting && snapshotFile.good()) {
 			if (!snapshotFile.read(reinterpret_cast<char *>(drawdownsVec.data()),
-														 comboVec.size() * sizeof(drawdowns))) {
+														 numCombos * sizeof(drawdowns))) {
 				cout << "Failed to read drawdowns" << endl;
 				return 1;
 			}
 			if (!snapshotFile.read(
 							reinterpret_cast<char *>(drawdownLengthsVec.data()),
-							comboVec.size() * sizeof(drawdownLengths))) {
+							numCombos * sizeof(drawdownLengths))) {
 				cout << "Failed to read drawdown lengths" << endl;
 				return 1;
 			}
 			if (!snapshotFile.read(reinterpret_cast<char *>(lossStreaksVec.data()),
-														 comboVec.size() * sizeof(lossStreaks))) {
+														 numCombos * sizeof(lossStreaks))) {
 				cout << "Failed to read loss streaks" << endl;
 				return 1;
 			}
 			if (!snapshotFile.read(reinterpret_cast<char *>(tradeDurationsVec.data()),
-														 comboVec.size() * sizeof(tradeDurations))) {
+														 numCombos * sizeof(tradeDurations))) {
 				cout << "Failed to read trade durations" << endl;
 				return 1;
 			}
 			if (!snapshotFile.read(reinterpret_cast<char *>(monthlyReturnsVec.data()),
-														 comboVec.size() * sizeof(monthlyReturns))) {
+														 numCombos * sizeof(monthlyReturns))) {
 				cout << "Failed to read monthly returns" << endl;
 				return 1;
 			}
 			if (!snapshotFile.read(reinterpret_cast<char *>(winsVec.data()),
-														 comboVec.size() * sizeof(wins))) {
+														 numCombos * sizeof(wins))) {
 				cout << "Failed to read wins" << endl;
 				return 1;
 			}
 			if (!snapshotFile.read(reinterpret_cast<char *>(lossesVec.data()),
-														 comboVec.size() * sizeof(losses))) {
+														 numCombos * sizeof(losses))) {
 				cout << "Failed to read losses" << endl;
 				return 1;
 			}
@@ -990,17 +1337,16 @@ int main(int argc, char *argv[]) {
 		drawdownsBuf = cl::Buffer(
 				context,
 				CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-				comboVec.size() * sizeof(drawdowns), &drawdownsVec[0], &err);
+				numCombos * sizeof(drawdowns), &drawdownsVec[0], &err);
 		if (err != CL_SUCCESS) {
 			cout << "Error for drawdownsBuf: " << err << endl;
 			return 1;
 		}
 
-		drawdownLengthsBuf = cl::Buffer(context,
-																		CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY |
-																				CL_MEM_COPY_HOST_PTR,
-																		comboVec.size() * sizeof(drawdownLengths),
-																		&drawdownLengthsVec[0], &err);
+		drawdownLengthsBuf = cl::Buffer(
+				context,
+				CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+				numCombos * sizeof(drawdownLengths), &drawdownLengthsVec[0], &err);
 		if (err != CL_SUCCESS) {
 			cout << "Error for drawdownLengthsBuf: " << err << endl;
 			return 1;
@@ -1009,7 +1355,7 @@ int main(int argc, char *argv[]) {
 		lossStreaksBuf = cl::Buffer(
 				context,
 				CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-				comboVec.size() * sizeof(lossStreaks), &lossStreaksVec[0], &err);
+				numCombos * sizeof(lossStreaks), &lossStreaksVec[0], &err);
 		if (err != CL_SUCCESS) {
 			cout << "Error for lossStreaksBuf: " << err << endl;
 			return 1;
@@ -1018,7 +1364,7 @@ int main(int argc, char *argv[]) {
 		tradeDurationsBuf = cl::Buffer(
 				context,
 				CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-				comboVec.size() * sizeof(tradeDurations), &tradeDurationsVec[0], &err);
+				numCombos * sizeof(tradeDurations), &tradeDurationsVec[0], &err);
 		if (err != CL_SUCCESS) {
 			cout << "Error for tradeDurationsBuf: " << err << endl;
 			return 1;
@@ -1027,7 +1373,7 @@ int main(int argc, char *argv[]) {
 		monthlyReturnsBuf = cl::Buffer(
 				context,
 				CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-				comboVec.size() * sizeof(monthlyReturns), &monthlyReturnsVec[0], &err);
+				numCombos * sizeof(monthlyReturns), &monthlyReturnsVec[0], &err);
 		if (err != CL_SUCCESS) {
 			cout << "Error for monthlyReturnsBuf: " << err << endl;
 			return 1;
@@ -1036,16 +1382,16 @@ int main(int argc, char *argv[]) {
 		winsBuf = cl::Buffer(context,
 												 CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY |
 														 CL_MEM_COPY_HOST_PTR,
-												 comboVec.size() * sizeof(wins), &winsVec[0], &err);
+												 numCombos * sizeof(wins), &winsVec[0], &err);
 		if (err != CL_SUCCESS) {
 			cout << "Error for winsBuf: " << err << endl;
 			return 1;
 		}
 
-		lossesBuf = cl::Buffer(
-				context,
-				CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-				comboVec.size() * sizeof(losses), &lossesVec[0], &err);
+		lossesBuf = cl::Buffer(context,
+													 CL_MEM_READ_WRITE | CL_MEM_HOST_READ_ONLY |
+															 CL_MEM_COPY_HOST_PTR,
+													 numCombos * sizeof(losses), &lossesVec[0], &err);
 		if (err != CL_SUCCESS) {
 			cout << "Error for lossesBuf: " << err << endl;
 			return 1;
@@ -1057,7 +1403,7 @@ int main(int argc, char *argv[]) {
 		cout << "Total size: " << (double)totalSize / (double)(1024 * 1024 * 1024)
 				 << " GiB" << endl;
 	} else {
-		numTradesInIntervalVec = vector<cl_int>(comboVec.size(), 0);
+		numTradesInIntervalVec = vector<cl_int>(numCombos, 0);
 		size_t numTradesInIntervalVecSize =
 				numTradesInIntervalVec.size() * sizeof(cl_int);
 		cout << "Size of number of trades in interval: "
@@ -1065,7 +1411,7 @@ int main(int argc, char *argv[]) {
 		if (snapshotting && snapshotFile.good()) {
 			if (!snapshotFile.read(
 							reinterpret_cast<char *>(numTradesInIntervalVec.data()),
-							comboVec.size() * sizeof(cl_int))) {
+							numCombos * sizeof(cl_int))) {
 				cout << "Failed to read number of trades in interval" << endl;
 				return 1;
 			}
@@ -1073,7 +1419,7 @@ int main(int argc, char *argv[]) {
 		numTradesInIntervalBuf = cl::Buffer(
 				context,
 				CL_MEM_WRITE_ONLY | CL_MEM_HOST_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-				comboVec.size() * sizeof(cl_int), &numTradesInIntervalVec[0], &err);
+				numCombos * sizeof(cl_int), &numTradesInIntervalVec[0], &err);
 		if (err != CL_SUCCESS) {
 			cout << "Error for numTradesInIntervalBuf: " << err << endl;
 			return 1;
@@ -1086,64 +1432,89 @@ int main(int argc, char *argv[]) {
 	if (snapshotFile.good())
 		snapshotFile.close();
 
-	err = volKernel.setArg(0, inputSize);
+	int argNum = -1;
+	err = kernel.setArg(++argNum, inputSize);
 	if (err != CL_SUCCESS) {
-		cout << "Error for volKernel setArg 0: " << err << endl;
+		cout << "Error for kernel setArg " << argNum << ": " << err << endl;
 	}
-	err = volKernel.setArg(1, inputTrades);
+	err = kernel.setArg(++argNum, inputTrades);
 	if (err != CL_SUCCESS) {
-		cout << "Error for volKernel setArg 1: " << err << endl;
+		cout << "Error for kernel setArg " << argNum << ": " << err << endl;
 	}
-	err = volKernel.setArg(2, indicatorBuffer);
+	err = kernel.setArg(++argNum, inputCombos);
 	if (err != CL_SUCCESS) {
-		cout << "Error for volKernel setArg 2: " << err << endl;
+		cout << "Error for kernel setArg " << argNum << ": " << err << endl;
 	}
-	err = volKernel.setArg(3, inputCombos);
+	err = kernel.setArg(++argNum, entries);
 	if (err != CL_SUCCESS) {
-		cout << "Error for volKernel setArg 3: " << err << endl;
+		cout << "Error for kernel setArg " << argNum << ": " << err << endl;
 	}
-	err = volKernel.setArg(4, entries);
+	err = kernel.setArg(++argNum, tradeRecords);
 	if (err != CL_SUCCESS) {
-		cout << "Error for volKernel setArg 4: " << err << endl;
+		cout << "Error for kernel setArg " << argNum << ": " << err << endl;
 	}
-	err = volKernel.setArg(5, tradeRecords);
-	if (err != CL_SUCCESS) {
-		cout << "Error for volKernel setArg 5: " << err << endl;
+
+	switch (mode) {
+	case Mode::Volume:
+	case Mode::VolumeDelta:
+	case Mode::VolumeExit:
+	case Mode::AllVolume:
+		err = kernel.setArg(++argNum, indicatorBuffer);
+		if (err != CL_SUCCESS) {
+			cout << "Error for kernel setArg " << argNum << ": " << err << endl;
+		}
+		break;
+	case Mode::Trend:
+		err = kernel.setArg(++argNum, positionDatas);
+		if (err != CL_SUCCESS) {
+			cout << "Error for kernel setArg " << argNum << ": " << err << endl;
+		}
+		break;
+	case Mode::VolumeTrend:
+		err = kernel.setArg(++argNum, indicatorBuffer);
+		if (err != CL_SUCCESS) {
+			cout << "Error for kernel setArg " << argNum << ": " << err << endl;
+		}
+		err = kernel.setArg(++argNum, positionDatas);
+		if (err != CL_SUCCESS) {
+			cout << "Error for kernel setArg " << argNum << ": " << err << endl;
+		}
+		break;
 	}
 
 	if (listTrades) {
-		err = volKernel.setArg(6, drawdownsBuf);
+		err = kernel.setArg(++argNum, drawdownsBuf);
 		if (err != CL_SUCCESS) {
-			cout << "Error for volKernel setArg 6: " << err << endl;
+			cout << "Error for kernel setArg " << argNum << ": " << err << endl;
 		}
-		err = volKernel.setArg(7, drawdownLengthsBuf);
+		err = kernel.setArg(++argNum, drawdownLengthsBuf);
 		if (err != CL_SUCCESS) {
-			cout << "Error for volKernel setArg 7: " << err << endl;
+			cout << "Error for kernel setArg " << argNum << ": " << err << endl;
 		}
-		err = volKernel.setArg(8, lossStreaksBuf);
+		err = kernel.setArg(++argNum, lossStreaksBuf);
 		if (err != CL_SUCCESS) {
-			cout << "Error for volKernel setArg 8: " << err << endl;
+			cout << "Error for kernel setArg " << argNum << ": " << err << endl;
 		}
-		err = volKernel.setArg(9, tradeDurationsBuf);
+		err = kernel.setArg(++argNum, tradeDurationsBuf);
 		if (err != CL_SUCCESS) {
-			cout << "Error for volKernel setArg 9: " << err << endl;
+			cout << "Error for kernel setArg " << argNum << ": " << err << endl;
 		}
-		err = volKernel.setArg(10, monthlyReturnsBuf);
+		err = kernel.setArg(++argNum, monthlyReturnsBuf);
 		if (err != CL_SUCCESS) {
-			cout << "Error for volKernel setArg 10: " << err << endl;
+			cout << "Error for kernel setArg " << argNum << ": " << err << endl;
 		}
-		err = volKernel.setArg(11, winsBuf);
+		err = kernel.setArg(++argNum, winsBuf);
 		if (err != CL_SUCCESS) {
-			cout << "Error for volKernel setArg 11: " << err << endl;
+			cout << "Error for kernel setArg " << argNum << ": " << err << endl;
 		}
-		err = volKernel.setArg(12, lossesBuf);
+		err = kernel.setArg(++argNum, lossesBuf);
 		if (err != CL_SUCCESS) {
-			cout << "Error for volKernel setArg 12: " << err << endl;
+			cout << "Error for kernel setArg " << argNum << ": " << err << endl;
 		}
 	} else {
-		err = volKernel.setArg(6, numTradesInIntervalBuf);
+		err = kernel.setArg(++argNum, numTradesInIntervalBuf);
 		if (err != CL_SUCCESS) {
-			cout << "Error for volKernel setArg 6: " << err << endl;
+			cout << "Error for kernel setArg " << argNum << ": " << err << endl;
 		}
 	}
 
@@ -1154,11 +1525,9 @@ int main(int argc, char *argv[]) {
 
 	bool justProcessed = false;
 
-	vector<vector<detailedTrade>> allTrades;
 	vector<perfMetrics> allPerfMetrics;
 	if (listTrades) {
-		allTrades.resize(comboVec.size());
-		allPerfMetrics.resize(comboVec.size());
+		allPerfMetrics.resize(numCombos);
 	}
 
 	auto setupTime = high_resolution_clock::now();
@@ -1233,11 +1602,30 @@ int main(int argc, char *argv[]) {
 #endif
 					tradesWithoutDates.emplace_back(convertTrade(t));
 					if (!initializedPositions) {
-						/*
-						for (auto &pos : positionDatasVec) {
-							pos.timestamp = t.timestamp;
+						if (mode == Mode::VolumeTrend || mode == Mode::Trend) {
+							if (positionDatasVec[0].maxPrice == 0.0 &&
+									positionDatasVec[0].minPrice == 0.0) {
+#ifdef DEBUG
+								assert(!existingSnapshot);
+#endif
+								for (auto &pos : positionDatasVec) {
+									pos.maxPrice = t.price;
+									pos.minPrice = t.price;
+								}
+								err = queue.enqueueWriteBuffer(positionDatas, CL_FALSE, 0,
+																							 numCombos * sizeof(positionData),
+																							 &positionDatasVec[0]);
+								if (err != CL_SUCCESS) {
+									cout << "Error for enqueueWriteBuffer positionDatas: " << err
+											 << endl;
+									return -1;
+								}
+							} else {
+#ifdef DEBUG
+								assert(existingSnapshot);
+#endif
+							}
 						}
-						*/
 						for (auto &tw : tws) {
 							tw.timestamp = t.timestamp;
 						}
@@ -1274,25 +1662,22 @@ int main(int argc, char *argv[]) {
 							 << (double)duration.count() / 1000000 << " seconds" << endl;
 					if (listTrades)
 						processTradesWithOnlineAlgs(
-								queue, volKernel, tradesWithoutDates, indicators, tws, comboVec,
-								inputTrades, indicatorBuffer, inputSize, entries, tradeRecords,
-								drawdownsBuf, drawdownLengthsBuf, lossStreaksBuf,
+								queue, kernel, tradesWithoutDates, indicators, tws, numCombos,
+								inputTrades, inputSize, entries, tradeRecords, indicatorBuffer,
+								positionDatas, drawdownsBuf, drawdownLengthsBuf, lossStreaksBuf,
 								tradeDurationsBuf, monthlyReturnsBuf, winsBuf, lossesBuf,
-								entriesVec, tradeRecordsVec, drawdownsVec, drawdownLengthsVec,
-								lossStreaksVec, tradeDurationsVec, monthlyReturnsVec, winsVec,
-								lossesVec, snapshotting);
+								entriesVec, tradeRecordsVec, positionDatasVec, drawdownsVec,
+								drawdownLengthsVec, lossStreaksVec, tradeDurationsVec,
+								monthlyReturnsVec, winsVec, lossesVec, snapshotting, mode);
 					else
-						maxTradesPerInterval = max(
-								maxTradesPerInterval,
-								// processTrades(queue, volKernel, tradesWithoutDates,
-								// comboVec, 							inputTrades, inputSize,
-								// twBetweenRunData, 							positionDatas,
-								// numTradesInIntervalBuf));
-								processTradesWithIndicators(
-										queue, volKernel, tradesWithoutDates, indicators, tws,
-										comboVec, inputTrades, indicatorBuffer, inputSize, entries,
-										tradeRecords, numTradesInIntervalBuf, entriesVec,
-										tradeRecordsVec, numTradesInIntervalVec, snapshotting));
+						maxTradesPerInterval =
+								max(maxTradesPerInterval,
+										processTrades(queue, kernel, tradesWithoutDates, indicators,
+																	tws, numCombos, inputTrades, inputSize,
+																	entries, tradeRecords, indicatorBuffer,
+																	positionDatas, numTradesInIntervalBuf,
+																	entriesVec, tradeRecordsVec, positionDatasVec,
+																	numTradesInIntervalVec, snapshotting, mode));
 					justProcessed = true;
 				}
 				currIdx++;
@@ -1319,39 +1704,29 @@ int main(int argc, char *argv[]) {
 			cout << "Time taken to compute indicators: "
 					 << (double)duration.count() / 1000000 << " seconds" << endl;
 			if (listTrades)
-				// processTradesWithListing(queue, volKernel, tradesWithoutDates,
-				// comboVec, 												 inputTrades, inputSize,
-				// twBetweenRunData, 												 positionDatas,
-				// numTradesInIntervalBuf,
-				//												 allTrades);
-				// processTradesWithListingAndIndicators(
-				// 		queue, volKernel, tradesWithoutDates, indicators, tws, comboVec,
-				// 		inputTrades, indicatorBuffer, inputSize, entriesAndExitsBuf,
-				// 		allTrades);
 				processTradesWithOnlineAlgs(
-						queue, volKernel, tradesWithoutDates, indicators, tws, comboVec,
-						inputTrades, indicatorBuffer, inputSize, entries, tradeRecords,
-						drawdownsBuf, drawdownLengthsBuf, lossStreaksBuf, tradeDurationsBuf,
-						monthlyReturnsBuf, winsBuf, lossesBuf, entriesVec, tradeRecordsVec,
-						drawdownsVec, drawdownLengthsVec, lossStreaksVec, tradeDurationsVec,
-						monthlyReturnsVec, winsVec, lossesVec, snapshotting);
+						queue, kernel, tradesWithoutDates, indicators, tws, numCombos,
+						inputTrades, inputSize, entries, tradeRecords, indicatorBuffer,
+						positionDatas, drawdownsBuf, drawdownLengthsBuf, lossStreaksBuf,
+						tradeDurationsBuf, monthlyReturnsBuf, winsBuf, lossesBuf,
+						entriesVec, tradeRecordsVec, positionDatasVec, drawdownsVec,
+						drawdownLengthsVec, lossStreaksVec, tradeDurationsVec,
+						monthlyReturnsVec, winsVec, lossesVec, snapshotting, mode);
 			else
 				maxTradesPerInterval =
 						max(maxTradesPerInterval,
-								// processTrades(queue, volKernel, tradesWithoutDates, comboVec,
-								// 							inputTrades, inputSize, twBetweenRunData,
-								// 							positionDatas, numTradesInIntervalBuf));
-								processTradesWithIndicators(
-										queue, volKernel, tradesWithoutDates, indicators, tws,
-										comboVec, inputTrades, indicatorBuffer, inputSize, entries,
-										tradeRecords, numTradesInIntervalBuf, entriesVec,
-										tradeRecordsVec, numTradesInIntervalVec, snapshotting));
+								processTrades(queue, kernel, tradesWithoutDates, indicators,
+															tws, numCombos, inputTrades, inputSize, entries,
+															tradeRecords, indicatorBuffer, positionDatas,
+															numTradesInIntervalBuf, entriesVec,
+															tradeRecordsVec, positionDatasVec,
+															numTradesInIntervalVec, snapshotting, mode));
 		} else
 			cout << "Run was already finished in the snapshot" << endl;
 	}
 
 	err = queue.enqueueReadBuffer(tradeRecords, CL_FALSE, 0,
-																comboVec.size() * sizeof(tradeRecord),
+																numCombos * sizeof(tradeRecord),
 																&tradeRecordsVec[0]);
 	if (err != CL_SUCCESS) {
 		cout << "Error for enqueueReadBuffer tradeRecords: " << err << endl;
@@ -1360,49 +1735,48 @@ int main(int argc, char *argv[]) {
 
 	if (listTrades) {
 		err = queue.enqueueReadBuffer(drawdownsBuf, CL_FALSE, 0,
-																	comboVec.size() * sizeof(drawdowns),
+																	numCombos * sizeof(drawdowns),
 																	&drawdownsVec[0]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueReadBuffer drawdownsBuf: " << err << endl;
 			return 1;
 		}
 		err = queue.enqueueReadBuffer(drawdownLengthsBuf, CL_FALSE, 0,
-																	comboVec.size() * sizeof(drawdownLengths),
+																	numCombos * sizeof(drawdownLengths),
 																	&drawdownLengthsVec[0]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueReadBuffer drawdownLengthsBuf: " << err << endl;
 			return 1;
 		}
 		err = queue.enqueueReadBuffer(lossStreaksBuf, CL_FALSE, 0,
-																	comboVec.size() * sizeof(lossStreaks),
+																	numCombos * sizeof(lossStreaks),
 																	&lossStreaksVec[0]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueReadBuffer lossStreaksBuf: " << err << endl;
 			return 1;
 		}
 		err = queue.enqueueReadBuffer(tradeDurationsBuf, CL_FALSE, 0,
-																	comboVec.size() * sizeof(tradeDurations),
+																	numCombos * sizeof(tradeDurations),
 																	&tradeDurationsVec[0]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueReadBuffer tradeDurationsBuf: " << err << endl;
 			return 1;
 		}
 		err = queue.enqueueReadBuffer(monthlyReturnsBuf, CL_FALSE, 0,
-																	comboVec.size() * sizeof(monthlyReturns),
+																	numCombos * sizeof(monthlyReturns),
 																	&monthlyReturnsVec[0]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueReadBuffer monthlyReturnsBuf: " << err << endl;
 			return 1;
 		}
 		err = queue.enqueueReadBuffer(winsBuf, CL_FALSE, 0,
-																	comboVec.size() * sizeof(wins), &winsVec[0]);
+																	numCombos * sizeof(wins), &winsVec[0]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueReadBuffer winsBuf: " << err << endl;
 			return 1;
 		}
 		err = queue.enqueueReadBuffer(lossesBuf, CL_FALSE, 0,
-																	comboVec.size() * sizeof(losses),
-																	&lossesVec[0]);
+																	numCombos * sizeof(losses), &lossesVec[0]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueReadBuffer lossesBuf: " << err << endl;
 			return 1;
@@ -1427,7 +1801,7 @@ int main(int argc, char *argv[]) {
 	cout << "Time taken to run kernel: " << (double)duration.count() / 1000000
 			 << " seconds" << endl;
 
-	string resultsFilename = "resultsVolDelta";
+	string resultsFilename = "results" + modeString;
 	if (isBTC)
 		resultsFilename += "BTC";
 	else
@@ -1437,7 +1811,6 @@ int main(int argc, char *argv[]) {
 		resultsFilename += "Futures";
 	if (listTrades) {
 		resultsFilename += "Detailed";
-		// analyzePerf(allPerfMetrics, allTrades);
 		analyzePerf(allPerfMetrics, monthlyReturnsVec, drawdownsVec);
 
 		auto afterAnalysisTime = high_resolution_clock::now();
@@ -1598,34 +1971,10 @@ int main(int argc, char *argv[]) {
 				outFile << endl;
 			}
 
-			for (size_t i = 0; i < comboVec.size(); i++) {
-				outputMetrics(outFile, maxElementIdx, comboVec, tradeRecordsVec,
-											allPerfMetrics, drawdownsVec, drawdownLengthsVec,
-											lossStreaksVec, tradeDurationsVec, winsVec, lossesVec,
-											listTrades);
-				/*
-				if (listTrades) {
-					for (size_t j = 0; j < allTrades[i].size(); j++) {
-						detailedTrade e = allTrades[i][j];
-						if (e.isLong) {
-							outFile << "Long ";
-						} else {
-							outFile << "Short ";
-						}
-						outFile << e.entryTimestamp << endl;
-						outFile << convertTsToDate(e.entryTimestamp) << endl;
-						outFile << "Buy volume: " << e.e.buyVol << endl;
-						outFile << "Sell volume: " << e.e.sellVol << endl;
-						if (e.profitMargin >= 1.0) {
-							outFile << "Profit: " << e.profitMargin;
-						} else {
-							outFile << "Loss: " << e.profitMargin;
-						}
-						outFile << " " << e.exitTimestamp << endl;
-						outFile << convertTsToDate(e.exitTimestamp) << endl;
-					}
-				}
-				*/
+			for (size_t i = 0; i < numCombos; i++) {
+				outputMetrics(outFile, i, comboVec, tradeRecordsVec, allPerfMetrics,
+											drawdownsVec, drawdownLengthsVec, lossStreaksVec,
+											tradeDurationsVec, winsVec, lossesVec, listTrades);
 				outFile << endl;
 			}
 			outFile.close();
