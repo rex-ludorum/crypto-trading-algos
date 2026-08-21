@@ -221,7 +221,7 @@ inline int computeIndicatorIdx(long window) {
 	return window / FIFTEEN_MINUTES_MICROSECONDS - 1;
 }
 
-inline void processOnlineAlgs(int index, double capital, long microseconds, double profitMargin, bool win, drawdowns* drawdowns, drawdownLengths* drawdownLengths, lossStreaks* lossStreaks, tradeDurations* tradeDurations, monthlyReturns* monthlyReturns, wins* wins, losses* losses) {
+inline void processOnlineAlgs(int index, double capital, long microseconds, double profitMargin, bool win, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
 	long newTradeDuration = microseconds - tradeDurations[index].entryTimestamp;
 	tradeDurations[index].max = max(tradeDurations[index].max, newTradeDuration);
 	double oldMean = tradeDurations[index].mean;
