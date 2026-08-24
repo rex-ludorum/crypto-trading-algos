@@ -689,6 +689,8 @@ int main(int argc, char *argv[]) {
 
 	auto startTime = high_resolution_clock::now();
 
+	initializeDevice("trader.cl");
+
 	vector<long long> windows(NUM_WINDOWS);
 	long long n = 0;
 	generate(windows.begin(), windows.end(),
@@ -707,6 +709,16 @@ int main(int argc, char *argv[]) {
 	x = 0;
 	generate(entryThresholds.begin(), entryThresholds.end(),
 					 [x]() mutable { return x += 0.05; });
+
+	vector<double> contractMultipliers(20);
+	x = 0;
+	generate(entryThresholds.begin(), entryThresholds.end(),
+					 [x]() mutable { return x += 0.05; });
+
+	int y = 21;
+	vector<int> periodsAfterOpen(21);
+	generate(periodsAfterOpen.begin(), periodsAfterOpen.end(),
+					 [y]() mutable { return y += 1; });
 
 	vector<vector<double>> buyVolPercentiles;
 	vector<vector<double>> sellVolPercentiles;
@@ -804,26 +816,28 @@ int main(int argc, char *argv[]) {
 
 	auto visitor = [&indWindows, &buyVolPercentiles, &sellVolPercentiles,
 									&stopLosses, &targets, &deltaVolPercentiles, &entryThresholds,
-									&comboVecSize, &numCombos](auto &comboVec) {
+									&comboVecSize, &numCombos, &contractMultipliers,
+									&periodsAfterOpen](auto &comboVec) {
 		using T = typename decay_t<decltype(comboVec)>::value_type;
 		if constexpr (is_same_v<T, comboVol>) {
-			auto firstCombo =
-					cartesian_product(indWindows[0], buyVolPercentiles[0],
-														sellVolPercentiles[0], stopLosses, targets);
+			auto firstCombo = cartesian_product(
+					indWindows[0], buyVolPercentiles[0], sellVolPercentiles[0],
+					stopLosses, targets, contractMultipliers, periodsAfterOpen);
 			vector<decltype(firstCombo)> combos;
 			combos.emplace_back(firstCombo);
 
 			for (int i = 1; i < NUM_WINDOWS; i++) {
-				combos.emplace_back(
-						cartesian_product(indWindows[i], buyVolPercentiles[i],
-															sellVolPercentiles[i], stopLosses, targets));
+				combos.emplace_back(cartesian_product(
+						indWindows[i], buyVolPercentiles[i], sellVolPercentiles[i],
+						stopLosses, targets, contractMultipliers, periodsAfterOpen));
 			}
 
 			for (int i = 0; i < NUM_WINDOWS; i++) {
 				for (unsigned int j = 0; j < combos[i].size(); j++) {
 					comboVol c = {get<0>(combos[i][j]), get<1>(combos[i][j]),
 												get<2>(combos[i][j]), get<3>(combos[i][j]),
-												get<4>(combos[i][j])};
+												get<4>(combos[i][j]), get<5>(combos[i][j]),
+												get<6>(combos[i][j])};
 					// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
 					// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
 					if (c.stopLoss < c.target + 1.1)
@@ -956,8 +970,6 @@ int main(int argc, char *argv[]) {
 	};
 
 	visit(visitor, comboVec);
-
-	initializeDevice("trader.cl");
 
 	vector<positionData> positionDatasVec;
 	size_t positionDatasVecSize = 0;

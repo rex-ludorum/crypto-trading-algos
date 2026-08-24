@@ -32,7 +32,7 @@ using std::vector;
 
 #define RISK_FREE_RATE 1.01
 
-#define STARTING_CAPITAL 100000
+#define STARTING_CAPITAL 400000
 
 #define BTC_MARGIN_RATE 0.026666666
 #define ETH_MARGIN_RATE 0.039145908
@@ -117,6 +117,8 @@ struct __attribute__((packed)) comboVol {
 	cl_double sellVolPercentile;
 	cl_double stopLoss;
 	cl_double target;
+	cl_double contractMultiplier;
+	cl_int periodsAfterOpen;
 };
 
 struct __attribute__((packed)) comboVolDelta {

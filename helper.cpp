@@ -361,6 +361,8 @@ void outputMetrics(ostream &os, size_t idx, const ComboVec &comboVec,
 				 << " minutes" << endl;
 			os << "Buy volume threshold: " << vec[idx].buyVolPercentile << endl;
 			os << "Sell volume threshold: " << vec[idx].sellVolPercentile << endl;
+			os << "Contract multiplier: " << vec[idx].contractMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
 		} else if constexpr (is_same_v<T, comboVolDelta>) {
 			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
 			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)

@@ -11,6 +11,8 @@ typedef struct __attribute__ ((packed)) comboVol {
 	double sellVolPercentile;
 	double stopLoss;
 	double target;
+	double contractMultiplier;
+	int periodsAfterOpen;
 } comboVol;
 
 typedef struct __attribute__ ((packed)) comboVolDelta {
@@ -146,6 +148,7 @@ typedef struct __attribute__((packed)) losses {
 #define DAYS_IN_LEAP_YEAR_CYCLE 1461
 #define SECONDS_IN_DAY 86400
 #define FIFTEEN_MINUTES_MICROSECONDS 900000000
+#define THIRTY_MINUTES_MICROSECONDS 1800000000
 
 #define BTC_MARGIN_RATE 0.026666666
 #define ETH_MARGIN_RATE 0.039145908
@@ -188,6 +191,20 @@ inline int isDST(long ts) {
 	} else {
 		return daysInCurrentYear > dstStart && daysInCurrentYear < dstEnd;
 	}
+}
+
+inline int isInTradingHours(long microseconds, int periodsAfterOpen) {
+	int isDSTInt = isDST(microseconds);
+	long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+	long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+	long openRemainder = CME_OPEN + periodsAfterOpen * THIRTY_MINUTES_MICROSECONDS;
+	openRemainder %= MICROSECONDS_IN_DAY;
+	bool inClose;
+	if (openRemainder > CME_CLOSE) inClose = dayRemainder >= CME_CLOSE && dayRemainder < openRemainder;
+	else inClose = dayRemainder >= CME_CLOSE || dayRemainder < openRemainder;
+	bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+	return !inClose && !onWeekend;
 }
 
 inline long getTsOfNextMonth(long ts) {
@@ -472,22 +489,18 @@ __kernel void volTraderFutures(__global int* numTrades, __global tradeWithoutDat
 		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
 		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
 		long microseconds = trades[i].timestamp;
-		int isDSTInt = isDST(microseconds);
-		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
-		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
-		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
-		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+		int isValidTradingHours = isInTradingHours(microseconds, c.periodsAfterOpen);
 
 		if (e.price != 0.0) {
 			double profit, profitMargin;
-			int contracts = capital / (e.price * BTC_MARGIN_RATE);
+			int contracts = capital / (e.price * BTC_MARGIN_RATE) * c.contractMultiplier;
 			if (e.isLong) {
 				profit = contracts * (price - e.price) * 0.1;
 			} else {
 				profit = contracts * (e.price - price) * 0.1;
 			}
 			profitMargin = (capital + profit) / capital;
-			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+			if (!isValidTradingHours || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
 				if (fabs(price - lastPrice) >= FUTURES_PRICE_CHANGE_LIMIT) {
 					profitMargin = max(min(profitMargin, precomputedTarget), precomputedStopLoss);
 				}
@@ -506,7 +519,7 @@ __kernel void volTraderFutures(__global int* numTrades, __global tradeWithoutDat
 			}
 		}
 
-		if (e.price == 0.0 && !inClose && !onWeekend) {
+		if (e.price == 0.0 && isValidTradingHours) {
 			if (buyVol >= c.buyVolPercentile) {
 				e = (entry) {price, true};
 				ls += 1;
@@ -554,22 +567,18 @@ __kernel void volTraderFuturesWithOnlineAlgs(__global int* numTrades, __global t
 		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
 		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
 		long microseconds = trades[i].timestamp;
-		int isDSTInt = isDST(microseconds);
-		long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
-		long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
-		bool inClose = dayRemainder >= CME_CLOSE && dayRemainder < CME_OPEN;
-		bool onWeekend = weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+		int isValidTradingHours = isInTradingHours(microseconds, c.periodsAfterOpen);
 
 		if (e.price != 0.0) {
 			double profit, profitMargin;
-			int contracts = capital / (e.price * BTC_MARGIN_RATE);
+			int contracts = capital / (e.price * BTC_MARGIN_RATE) * c.contractMultiplier;
 			if (e.isLong) {
 				profit = contracts * (price - e.price) * 0.1;
 			} else {
 				profit = contracts * (e.price - price) * 0.1;
 			}
 			profitMargin = (capital + profit) / capital;
-			if (inClose || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
+			if (!isValidTradingHours || profitMargin >= precomputedTarget || profitMargin <= precomputedStopLoss) {
 				if (fabs(price - lastPrice) >= FUTURES_PRICE_CHANGE_LIMIT) {
 					profitMargin = max(min(profitMargin, precomputedTarget), precomputedStopLoss);
 				}
@@ -590,7 +599,7 @@ __kernel void volTraderFuturesWithOnlineAlgs(__global int* numTrades, __global t
 			}
 		}
 
-		if (e.price == 0.0 && !inClose && !onWeekend) {
+		if (e.price == 0.0 && isValidTradingHours) {
 			if (buyVol >= c.buyVolPercentile) {
 				e = (entry) {price, true};
 				ls += 1;
