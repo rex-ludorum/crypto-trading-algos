@@ -710,13 +710,13 @@ int main(int argc, char *argv[]) {
 	generate(entryThresholds.begin(), entryThresholds.end(),
 					 [x]() mutable { return x += 0.05; });
 
-	vector<double> contractMultipliers(20);
+	vector<double> contractMultipliers(10);
 	x = 0;
-	generate(entryThresholds.begin(), entryThresholds.end(),
-					 [x]() mutable { return x += 0.05; });
+	generate(contractMultipliers.begin(), contractMultipliers.end(),
+					 [x]() mutable { return x += 0.1; });
 
-	int y = 21;
-	vector<int> periodsAfterOpen(21);
+	int y = 10;
+	vector<int> periodsAfterOpen(11);
 	generate(periodsAfterOpen.begin(), periodsAfterOpen.end(),
 					 [y]() mutable { return y += 1; });
 

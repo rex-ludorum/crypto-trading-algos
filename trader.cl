@@ -156,7 +156,7 @@ typedef struct __attribute__((packed)) losses {
 #define BTC_COMMISSION_PER_CONTRACT 1.92
 #define ETH_COMMISSION_PER_CONTRACT 0.87
 
-#define NUM_WINDOWS 16
+#define NUM_WINDOWS 4
 
 #define FUTURES_PRICE_CHANGE_LIMIT 100
 
@@ -197,7 +197,7 @@ inline int isInTradingHours(long microseconds, int periodsAfterOpen) {
 	int isDSTInt = isDST(microseconds);
 	long dayRemainder = microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
 	long weekRemainder = microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
-	long openRemainder = CME_OPEN + periodsAfterOpen * THIRTY_MINUTES_MICROSECONDS;
+	long openRemainder = CME_OPEN + periodsAfterOpen * MICROSECONDS_IN_HOUR;
 	openRemainder %= MICROSECONDS_IN_DAY;
 	bool inClose;
 	if (openRemainder > CME_CLOSE) inClose = dayRemainder >= CME_CLOSE && dayRemainder < openRemainder;
