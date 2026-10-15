@@ -364,7 +364,7 @@ int processTrades(
 		case Mode::Trend:
 		case Mode::VolumeTrend:
 			err = queue.enqueueReadBuffer(positionDatas, CL_FALSE, 0,
-																		numCombos * sizeof(positionDatas),
+																		numCombos * sizeof(positionData),
 																		&positionDatasVec[0]);
 			if (err != CL_SUCCESS) {
 				cout << "Error for enqueueReadBuffer positionDatas: " << err << endl;
@@ -514,7 +514,7 @@ void processTradesWithOnlineAlgs(
 		case Mode::Trend:
 		case Mode::VolumeTrend:
 			err = queue.enqueueReadBuffer(positionDatas, CL_FALSE, 0,
-																		numCombos * sizeof(positionDatas),
+																		numCombos * sizeof(positionData),
 																		&positionDatasVec[0]);
 			if (err != CL_SUCCESS) {
 				cout << "Error for enqueueReadBuffer positionDatas: " << err << endl;
@@ -559,13 +559,13 @@ void processTradesWithOnlineAlgs(
 			return;
 		}
 		err = queue.enqueueReadBuffer(winsBuf, CL_FALSE, 0,
-																	numCombos * sizeof(winsBuf), &winsVec[0]);
+																	numCombos * sizeof(wins), &winsVec[0]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueReadBuffer winsBuf: " << err << endl;
 			return;
 		}
 		err = queue.enqueueReadBuffer(lossesBuf, CL_FALSE, 0,
-																	numCombos * sizeof(lossesBuf), &lossesVec[0]);
+																	numCombos * sizeof(losses), &lossesVec[0]);
 		if (err != CL_SUCCESS) {
 			cout << "Error for enqueueReadBuffer lossesBuf: " << err << endl;
 			return;
