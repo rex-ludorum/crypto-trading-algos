@@ -111,7 +111,17 @@ struct __attribute__((packed)) twMetadata {
 	cl_int twStart;
 };
 
-struct __attribute__((packed)) comboVol {
+struct __attribute__((packed)) comboVolPerps {
+	cl_long window;
+	cl_double buyVolPercentile;
+	cl_double sellVolPercentile;
+	cl_double stopLoss;
+	cl_double target;
+	cl_double leverageMultiplier;
+	cl_int periodsAfterOpen;
+};
+
+struct __attribute__((packed)) comboVolFutures {
 	cl_long window;
 	cl_double buyVolPercentile;
 	cl_double sellVolPercentile;
@@ -121,23 +131,47 @@ struct __attribute__((packed)) comboVol {
 	cl_int periodsAfterOpen;
 };
 
-struct __attribute__((packed)) comboVolDelta {
+struct __attribute__((packed)) comboVolDeltaPerps {
 	cl_long window;
 	cl_double buyVolDeltaPercentile;
 	cl_double sellVolDeltaPercentile;
 	cl_double stopLoss;
 	cl_double target;
+	cl_double leverageMultiplier;
+	cl_int periodsAfterOpen;
 };
 
-struct __attribute__((packed)) comboVolExit {
+struct __attribute__((packed)) comboVolDeltaFutures {
+	cl_long window;
+	cl_double buyVolDeltaPercentile;
+	cl_double sellVolDeltaPercentile;
+	cl_double stopLoss;
+	cl_double target;
+	cl_double contractMultiplier;
+	cl_int periodsAfterOpen;
+};
+
+struct __attribute__((packed)) comboVolExitPerps {
 	cl_long window;
 	cl_double buyVolPercentile;
 	cl_double sellVolPercentile;
 	cl_double buyVolExitPercentile;
 	cl_double sellVolExitPercentile;
+	cl_double leverageMultiplier;
+	cl_int periodsAfterOpen;
 };
 
-struct __attribute__((packed)) comboAllVol {
+struct __attribute__((packed)) comboVolExitFutures {
+	cl_long window;
+	cl_double buyVolPercentile;
+	cl_double sellVolPercentile;
+	cl_double buyVolExitPercentile;
+	cl_double sellVolExitPercentile;
+	cl_double contractMultiplier;
+	cl_int periodsAfterOpen;
+};
+
+struct __attribute__((packed)) comboAllVolPerps {
 	cl_long window;
 	cl_double buyVolPercentile;
 	cl_double sellVolPercentile;
@@ -145,26 +179,67 @@ struct __attribute__((packed)) comboAllVol {
 	cl_double sellVolDeltaPercentile;
 	cl_double stopLoss;
 	cl_double target;
+	cl_double leverageMultiplier;
+	cl_int periodsAfterOpen;
 };
 
-struct __attribute__((packed)) comboTrend {
+struct __attribute__((packed)) comboAllVolFutures {
+	cl_long window;
+	cl_double buyVolPercentile;
+	cl_double sellVolPercentile;
+	cl_double buyVolDeltaPercentile;
+	cl_double sellVolDeltaPercentile;
+	cl_double stopLoss;
+	cl_double target;
+	cl_double contractMultiplier;
+	cl_int periodsAfterOpen;
+};
+
+struct __attribute__((packed)) comboTrendPerps {
 	cl_double entryThreshold;
 	cl_double stopLoss;
 	cl_double target;
+	cl_double leverageMultiplier;
+	cl_int periodsAfterOpen;
 };
 
-struct __attribute__((packed)) comboVolTrend {
+struct __attribute__((packed)) comboTrendFutures {
+	cl_double entryThreshold;
+	cl_double stopLoss;
+	cl_double target;
+	cl_double contractMultiplier;
+	cl_int periodsAfterOpen;
+};
+
+struct __attribute__((packed)) comboVolTrendPerps {
 	cl_long window;
 	cl_double buyVolPercentile;
 	cl_double sellVolPercentile;
 	cl_double entryThreshold;
 	cl_double stopLoss;
 	cl_double target;
+	cl_double leverageMultiplier;
+	cl_int periodsAfterOpen;
+};
+
+struct __attribute__((packed)) comboVolTrendFutures {
+	cl_long window;
+	cl_double buyVolPercentile;
+	cl_double sellVolPercentile;
+	cl_double entryThreshold;
+	cl_double stopLoss;
+	cl_double target;
+	cl_double contractMultiplier;
+	cl_int periodsAfterOpen;
 };
 
 using ComboVec =
-		variant<vector<comboVol>, vector<comboVolDelta>, vector<comboVolExit>,
-						vector<comboAllVol>, vector<comboTrend>, vector<comboVolTrend>>;
+		variant<vector<comboVolPerps>, vector<comboVolFutures>,
+						vector<comboVolDeltaPerps>, vector<comboVolDeltaFutures>,
+						vector<comboVolExitPerps>, vector<comboVolExitFutures>,
+						vector<comboAllVolPerps>, vector<comboAllVolFutures>,
+						vector<comboTrendPerps>, vector<comboTrendFutures>,
+						vector<comboVolTrendPerps>, vector<comboVolTrendFutures>>;
 
 struct __attribute__((packed)) drawdowns {
 	cl_int n;

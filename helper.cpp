@@ -353,7 +353,17 @@ void outputMetrics(ostream &os, size_t idx, const ComboVec &comboVec,
 
 	auto visitor = [&os, &idx](auto &vec) {
 		using T = typename decay_t<decltype(vec)>::value_type;
-		if constexpr (is_same_v<T, comboVol>) {
+		if constexpr (is_same_v<T, comboVolPerps>) {
+			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
+			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
+				 << endl;
+			os << "Window: " << vec[idx].window / ONE_MINUTE_MICROSECONDS
+				 << " minutes" << endl;
+			os << "Buy volume threshold: " << vec[idx].buyVolPercentile << endl;
+			os << "Sell volume threshold: " << vec[idx].sellVolPercentile << endl;
+			os << "Leverage multiplier: " << vec[idx].leverageMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
+		} else if constexpr (is_same_v<T, comboVolFutures>) {
 			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
 			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
 				 << endl;
@@ -363,7 +373,7 @@ void outputMetrics(ostream &os, size_t idx, const ComboVec &comboVec,
 			os << "Sell volume threshold: " << vec[idx].sellVolPercentile << endl;
 			os << "Contract multiplier: " << vec[idx].contractMultiplier << endl;
 			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
-		} else if constexpr (is_same_v<T, comboVolDelta>) {
+		} else if constexpr (is_same_v<T, comboVolDeltaPerps>) {
 			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
 			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
 				 << endl;
@@ -373,7 +383,21 @@ void outputMetrics(ostream &os, size_t idx, const ComboVec &comboVec,
 				 << endl;
 			os << "Sell volume delta threshold: " << vec[idx].sellVolDeltaPercentile
 				 << endl;
-		} else if constexpr (is_same_v<T, comboVolExit>) {
+			os << "Leverage multiplier: " << vec[idx].leverageMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
+		} else if constexpr (is_same_v<T, comboVolDeltaFutures>) {
+			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
+			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
+				 << endl;
+			os << "Window: " << vec[idx].window / ONE_MINUTE_MICROSECONDS
+				 << " minutes" << endl;
+			os << "Buy volume delta threshold: " << vec[idx].buyVolDeltaPercentile
+				 << endl;
+			os << "Sell volume delta threshold: " << vec[idx].sellVolDeltaPercentile
+				 << endl;
+			os << "Contract multiplier: " << vec[idx].contractMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
+		} else if constexpr (is_same_v<T, comboVolExitPerps>) {
 			os << "Window: " << vec[idx].window / ONE_MINUTE_MICROSECONDS
 				 << " minutes" << endl;
 			os << "Buy volume threshold: " << vec[idx].buyVolPercentile << endl;
@@ -382,7 +406,20 @@ void outputMetrics(ostream &os, size_t idx, const ComboVec &comboVec,
 				 << endl;
 			os << "Sell volume exit threshold: " << vec[idx].sellVolExitPercentile
 				 << endl;
-		} else if constexpr (is_same_v<T, comboAllVol>) {
+			os << "Leverage multiplier: " << vec[idx].leverageMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
+		} else if constexpr (is_same_v<T, comboVolExitFutures>) {
+			os << "Window: " << vec[idx].window / ONE_MINUTE_MICROSECONDS
+				 << " minutes" << endl;
+			os << "Buy volume threshold: " << vec[idx].buyVolPercentile << endl;
+			os << "Sell volume threshold: " << vec[idx].sellVolPercentile << endl;
+			os << "Buy volume exit threshold: " << vec[idx].buyVolExitPercentile
+				 << endl;
+			os << "Sell volume exit threshold: " << vec[idx].sellVolExitPercentile
+				 << endl;
+			os << "Contract multiplier: " << vec[idx].contractMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
+		} else if constexpr (is_same_v<T, comboAllVolPerps>) {
 			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
 			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
 				 << endl;
@@ -394,13 +431,39 @@ void outputMetrics(ostream &os, size_t idx, const ComboVec &comboVec,
 				 << endl;
 			os << "Sell volume delta threshold: " << vec[idx].sellVolDeltaPercentile
 				 << endl;
-		} else if constexpr (is_same_v<T, comboTrend>) {
+			os << "Leverage multiplier: " << vec[idx].leverageMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
+		} else if constexpr (is_same_v<T, comboAllVolFutures>) {
+			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
+			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
+				 << endl;
+			os << "Window: " << vec[idx].window / ONE_MINUTE_MICROSECONDS
+				 << " minutes" << endl;
+			os << "Buy volume threshold: " << vec[idx].buyVolPercentile << endl;
+			os << "Sell volume threshold: " << vec[idx].sellVolPercentile << endl;
+			os << "Buy volume delta threshold: " << vec[idx].buyVolDeltaPercentile
+				 << endl;
+			os << "Sell volume delta threshold: " << vec[idx].sellVolDeltaPercentile
+				 << endl;
+			os << "Contract multiplier: " << vec[idx].contractMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
+		} else if constexpr (is_same_v<T, comboTrendPerps>) {
 			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
 			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
 				 << endl;
 			os << "Entry threshold: "
 				 << format("{:.2f}", (double)vec[idx].entryThreshold) << endl;
-		} else if constexpr (is_same_v<T, comboVolTrend>) {
+			os << "Leverage multiplier: " << vec[idx].leverageMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
+		} else if constexpr (is_same_v<T, comboTrendFutures>) {
+			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
+			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
+				 << endl;
+			os << "Entry threshold: "
+				 << format("{:.2f}", (double)vec[idx].entryThreshold) << endl;
+			os << "Contract multiplier: " << vec[idx].contractMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
+		} else if constexpr (is_same_v<T, comboVolTrendPerps>) {
 			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
 			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
 				 << endl;
@@ -410,6 +473,20 @@ void outputMetrics(ostream &os, size_t idx, const ComboVec &comboVec,
 			os << "Sell volume threshold: " << vec[idx].sellVolPercentile << endl;
 			os << "Entry threshold: "
 				 << format("{:.2f}", (double)vec[idx].entryThreshold) << endl;
+			os << "Leverage multiplier: " << vec[idx].leverageMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
+		} else if constexpr (is_same_v<T, comboVolTrendFutures>) {
+			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
+			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
+				 << endl;
+			os << "Window: " << vec[idx].window / ONE_MINUTE_MICROSECONDS
+				 << " minutes" << endl;
+			os << "Buy volume threshold: " << vec[idx].buyVolPercentile << endl;
+			os << "Sell volume threshold: " << vec[idx].sellVolPercentile << endl;
+			os << "Entry threshold: "
+				 << format("{:.2f}", (double)vec[idx].entryThreshold) << endl;
+			os << "Contract multiplier: " << vec[idx].contractMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
 		}
 	};
 

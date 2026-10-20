@@ -715,10 +715,15 @@ int main(int argc, char *argv[]) {
 	generate(contractMultipliers.begin(), contractMultipliers.end(),
 					 [x]() mutable { return x += 0.1; });
 
-	int y = 10;
+	vector<double> leverageMultipliers(6);
+	x = 0;
+	generate(leverageMultipliers.begin(), leverageMultipliers.end(),
+					 [x]() mutable { return x += 1; });
+
+	int y = 0;
 	vector<int> periodsAfterOpen(11);
 	generate(periodsAfterOpen.begin(), periodsAfterOpen.end(),
-					 [y]() mutable { return y += 1; });
+					 [y]() mutable { return y += 2; });
 
 	vector<vector<double>> buyVolPercentiles;
 	vector<vector<double>> sellVolPercentiles;
@@ -795,31 +800,75 @@ int main(int argc, char *argv[]) {
 
 	switch (mode) {
 	case Mode::Volume:
-		comboVec = vector<comboVol>{};
+		if (futures)
+			comboVec = vector<comboVolFutures>{};
+		else
+			comboVec = vector<comboVolPerps>{};
 		break;
 	case Mode::VolumeDelta:
-		comboVec = vector<comboVolDelta>{};
+		if (futures)
+			comboVec = vector<comboVolDeltaFutures>{};
+		else
+			comboVec = vector<comboVolDeltaPerps>{};
 		break;
 	case Mode::VolumeExit:
-		comboVec = vector<comboVolExit>{};
+		if (futures)
+			comboVec = vector<comboVolExitFutures>{};
+		else
+			comboVec = vector<comboVolExitPerps>{};
 		break;
 	case Mode::AllVolume:
-		comboVec = vector<comboAllVol>{};
+		if (futures)
+			comboVec = vector<comboAllVolFutures>{};
+		else
+			comboVec = vector<comboAllVolPerps>{};
 		break;
 	case Mode::Trend:
-		comboVec = vector<comboTrend>{};
+		if (futures)
+			comboVec = vector<comboTrendFutures>{};
+		else
+			comboVec = vector<comboTrendPerps>{};
 		break;
 	case Mode::VolumeTrend:
-		comboVec = vector<comboVolTrend>{};
+		if (futures)
+			comboVec = vector<comboVolTrendFutures>{};
+		else
+			comboVec = vector<comboVolTrendPerps>{};
 		break;
 	}
 
 	auto visitor = [&indWindows, &buyVolPercentiles, &sellVolPercentiles,
 									&stopLosses, &targets, &deltaVolPercentiles, &entryThresholds,
-									&comboVecSize, &numCombos, &contractMultipliers,
-									&periodsAfterOpen](auto &comboVec) {
+									&comboVecSize, &numCombos, &leverageMultipliers,
+									&contractMultipliers, &periodsAfterOpen](auto &comboVec) {
 		using T = typename decay_t<decltype(comboVec)>::value_type;
-		if constexpr (is_same_v<T, comboVol>) {
+		if constexpr (is_same_v<T, comboVolPerps>) {
+			auto firstCombo = cartesian_product(
+					indWindows[0], buyVolPercentiles[0], sellVolPercentiles[0],
+					stopLosses, targets, leverageMultipliers, periodsAfterOpen);
+			vector<decltype(firstCombo)> combos;
+			combos.emplace_back(firstCombo);
+
+			for (int i = 1; i < NUM_WINDOWS; i++) {
+				combos.emplace_back(cartesian_product(
+						indWindows[i], buyVolPercentiles[i], sellVolPercentiles[i],
+						stopLosses, targets, leverageMultipliers, periodsAfterOpen));
+			}
+
+			for (int i = 0; i < NUM_WINDOWS; i++) {
+				for (unsigned int j = 0; j < combos[i].size(); j++) {
+					comboVolPerps c = {get<0>(combos[i][j]), get<1>(combos[i][j]),
+														 get<2>(combos[i][j]), get<3>(combos[i][j]),
+														 get<4>(combos[i][j]), get<5>(combos[i][j]),
+														 get<6>(combos[i][j])};
+					// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
+					// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
+					if (c.stopLoss < c.target + 1.1)
+						comboVec.emplace_back(c);
+				}
+			}
+			comboVecSize = comboVec.size() * sizeof(comboVolPerps);
+		} else if constexpr (is_same_v<T, comboVolFutures>) {
 			auto firstCombo = cartesian_product(
 					indWindows[0], buyVolPercentiles[0], sellVolPercentiles[0],
 					stopLosses, targets, contractMultipliers, periodsAfterOpen);
@@ -834,35 +883,36 @@ int main(int argc, char *argv[]) {
 
 			for (int i = 0; i < NUM_WINDOWS; i++) {
 				for (unsigned int j = 0; j < combos[i].size(); j++) {
-					comboVol c = {get<0>(combos[i][j]), get<1>(combos[i][j]),
-												get<2>(combos[i][j]), get<3>(combos[i][j]),
-												get<4>(combos[i][j]), get<5>(combos[i][j]),
-												get<6>(combos[i][j])};
+					comboVolFutures c = {get<0>(combos[i][j]), get<1>(combos[i][j]),
+															 get<2>(combos[i][j]), get<3>(combos[i][j]),
+															 get<4>(combos[i][j]), get<5>(combos[i][j]),
+															 get<6>(combos[i][j])};
 					// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
 					// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
 					if (c.stopLoss < c.target + 1.1)
 						comboVec.emplace_back(c);
 				}
 			}
-			comboVecSize = comboVec.size() * sizeof(comboVol);
-		} else if constexpr (is_same_v<T, comboVolDelta>) {
-			auto firstCombo =
-					cartesian_product(indWindows[0], deltaVolPercentiles[0],
-														deltaVolPercentiles[0], stopLosses, targets);
+			comboVecSize = comboVec.size() * sizeof(comboVolFutures);
+		} else if constexpr (is_same_v<T, comboVolDeltaPerps>) {
+			auto firstCombo = cartesian_product(
+					indWindows[0], deltaVolPercentiles[0], deltaVolPercentiles[0],
+					stopLosses, targets, leverageMultipliers, periodsAfterOpen);
 			vector<decltype(firstCombo)> combos;
 			combos.emplace_back(firstCombo);
 
 			for (int i = 1; i < NUM_WINDOWS; i++) {
-				combos.emplace_back(
-						cartesian_product(indWindows[i], deltaVolPercentiles[i],
-															deltaVolPercentiles[i], stopLosses, targets));
+				combos.emplace_back(cartesian_product(
+						indWindows[i], deltaVolPercentiles[i], deltaVolPercentiles[i],
+						stopLosses, targets, leverageMultipliers, periodsAfterOpen));
 			}
 
 			for (int i = 0; i < NUM_WINDOWS; i++) {
 				for (unsigned int j = 0; j < combos[i].size(); j++) {
-					comboVolDelta c = {get<0>(combos[i][j]), get<1>(combos[i][j]),
-														 get<2>(combos[i][j]), get<3>(combos[i][j]),
-														 get<4>(combos[i][j])};
+					comboVolDeltaPerps c = {get<0>(combos[i][j]), get<1>(combos[i][j]),
+																	get<2>(combos[i][j]), get<3>(combos[i][j]),
+																	get<4>(combos[i][j]), get<5>(combos[i][j]),
+																	get<6>(combos[i][j])};
 					// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
 					// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
 					if (c.stopLoss < c.target + 1.1 &&
@@ -870,25 +920,55 @@ int main(int argc, char *argv[]) {
 						comboVec.emplace_back(c);
 				}
 			}
-			comboVecSize = comboVec.size() * sizeof(comboVolDelta);
-		} else if constexpr (is_same_v<T, comboVolExit>) {
+			comboVecSize = comboVec.size() * sizeof(comboVolDeltaPerps);
+		} else if constexpr (is_same_v<T, comboVolDeltaFutures>) {
+			auto firstCombo = cartesian_product(
+					indWindows[0], deltaVolPercentiles[0], deltaVolPercentiles[0],
+					stopLosses, targets, contractMultipliers, periodsAfterOpen);
+			vector<decltype(firstCombo)> combos;
+			combos.emplace_back(firstCombo);
+
+			for (int i = 1; i < NUM_WINDOWS; i++) {
+				combos.emplace_back(cartesian_product(
+						indWindows[i], deltaVolPercentiles[i], deltaVolPercentiles[i],
+						stopLosses, targets, contractMultipliers, periodsAfterOpen));
+			}
+
+			for (int i = 0; i < NUM_WINDOWS; i++) {
+				for (unsigned int j = 0; j < combos[i].size(); j++) {
+					comboVolDeltaFutures c = {get<0>(combos[i][j]), get<1>(combos[i][j]),
+																		get<2>(combos[i][j]), get<3>(combos[i][j]),
+																		get<4>(combos[i][j]), get<5>(combos[i][j]),
+																		get<6>(combos[i][j])};
+					// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
+					// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
+					if (c.stopLoss < c.target + 1.1 &&
+							c.buyVolDeltaPercentile >= c.sellVolDeltaPercentile)
+						comboVec.emplace_back(c);
+				}
+			}
+			comboVecSize = comboVec.size() * sizeof(comboVolDeltaFutures);
+		} else if constexpr (is_same_v<T, comboVolExitPerps>) {
 			auto firstCombo = cartesian_product(
 					indWindows[0], buyVolPercentiles[0], sellVolPercentiles[0],
-					buyVolPercentiles[0], sellVolPercentiles[0]);
+					buyVolPercentiles[0], sellVolPercentiles[0], leverageMultipliers,
+					periodsAfterOpen);
 			vector<decltype(firstCombo)> combos;
 			combos.emplace_back(firstCombo);
 
 			for (int i = 1; i < NUM_WINDOWS; i++) {
 				combos.emplace_back(cartesian_product(
 						indWindows[i], buyVolPercentiles[i], sellVolPercentiles[i],
-						buyVolPercentiles[i], sellVolPercentiles[i]));
+						buyVolPercentiles[i], sellVolPercentiles[i], leverageMultipliers,
+						periodsAfterOpen));
 			}
 
 			for (int i = 0; i < NUM_WINDOWS; i++) {
 				for (unsigned int j = 0; j < combos[i].size(); j++) {
-					comboVolExit c = {get<0>(combos[i][j]), get<1>(combos[i][j]),
-														get<2>(combos[i][j]), get<3>(combos[i][j]),
-														get<4>(combos[i][j])};
+					comboVolExitPerps c = {get<0>(combos[i][j]), get<1>(combos[i][j]),
+																 get<2>(combos[i][j]), get<3>(combos[i][j]),
+																 get<4>(combos[i][j]), get<5>(combos[i][j]),
+																 get<6>(combos[i][j])};
 					// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
 					// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
 					if (c.buyVolPercentile > c.buyVolExitPercentile &&
@@ -896,27 +976,57 @@ int main(int argc, char *argv[]) {
 						comboVec.emplace_back(c);
 				}
 			}
-			comboVecSize = comboVec.size() * sizeof(comboVolExit);
-		} else if constexpr (is_same_v<T, comboAllVol>) {
+			comboVecSize = comboVec.size() * sizeof(comboVolExitPerps);
+		} else if constexpr (is_same_v<T, comboVolExitFutures>) {
 			auto firstCombo = cartesian_product(
 					indWindows[0], buyVolPercentiles[0], sellVolPercentiles[0],
-					deltaVolPercentiles[0], deltaVolPercentiles[0], stopLosses, targets);
+					buyVolPercentiles[0], sellVolPercentiles[0], contractMultipliers,
+					periodsAfterOpen);
 			vector<decltype(firstCombo)> combos;
 			combos.emplace_back(firstCombo);
 
 			for (int i = 1; i < NUM_WINDOWS; i++) {
-				combos.emplace_back(
-						cartesian_product(indWindows[i], buyVolPercentiles[i],
-															sellVolPercentiles[i], deltaVolPercentiles[i],
-															deltaVolPercentiles[i], stopLosses, targets));
+				combos.emplace_back(cartesian_product(
+						indWindows[i], buyVolPercentiles[i], sellVolPercentiles[i],
+						buyVolPercentiles[i], sellVolPercentiles[i], contractMultipliers,
+						periodsAfterOpen));
 			}
 
 			for (int i = 0; i < NUM_WINDOWS; i++) {
 				for (unsigned int j = 0; j < combos[i].size(); j++) {
-					comboAllVol c = {get<0>(combos[i][j]), get<1>(combos[i][j]),
-													 get<2>(combos[i][j]), get<3>(combos[i][j]),
-													 get<4>(combos[i][j]), get<5>(combos[i][j]),
-													 get<6>(combos[i][j])};
+					comboVolExitFutures c = {get<0>(combos[i][j]), get<1>(combos[i][j]),
+																	 get<2>(combos[i][j]), get<3>(combos[i][j]),
+																	 get<4>(combos[i][j]), get<5>(combos[i][j]),
+																	 get<6>(combos[i][j])};
+					// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
+					// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
+					if (c.buyVolPercentile > c.buyVolExitPercentile &&
+							c.sellVolPercentile > c.sellVolExitPercentile)
+						comboVec.emplace_back(c);
+				}
+			}
+			comboVecSize = comboVec.size() * sizeof(comboVolExitFutures);
+		} else if constexpr (is_same_v<T, comboAllVolPerps>) {
+			auto firstCombo = cartesian_product(
+					indWindows[0], buyVolPercentiles[0], sellVolPercentiles[0],
+					deltaVolPercentiles[0], deltaVolPercentiles[0], stopLosses, targets,
+					leverageMultipliers, periodsAfterOpen);
+			vector<decltype(firstCombo)> combos;
+			combos.emplace_back(firstCombo);
+
+			for (int i = 1; i < NUM_WINDOWS; i++) {
+				combos.emplace_back(cartesian_product(
+						indWindows[i], buyVolPercentiles[i], sellVolPercentiles[i],
+						deltaVolPercentiles[i], deltaVolPercentiles[i], stopLosses, targets,
+						leverageMultipliers, periodsAfterOpen));
+			}
+
+			for (int i = 0; i < NUM_WINDOWS; i++) {
+				for (unsigned int j = 0; j < combos[i].size(); j++) {
+					comboAllVolPerps c = {
+							get<0>(combos[i][j]), get<1>(combos[i][j]), get<2>(combos[i][j]),
+							get<3>(combos[i][j]), get<4>(combos[i][j]), get<5>(combos[i][j]),
+							get<6>(combos[i][j]), get<7>(combos[i][j]), get<8>(combos[i][j])};
 					// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
 					// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
 					if (c.stopLoss < c.target + 1.1 &&
@@ -926,44 +1036,122 @@ int main(int argc, char *argv[]) {
 						comboVec.emplace_back(c);
 				}
 			}
-			comboVecSize = comboVec.size() * sizeof(comboAllVol);
-		} else if constexpr (is_same_v<T, comboTrend>) {
-			auto combos = cartesian_product(entryThresholds, stopLosses, targets);
-
-			for (unsigned int j = 0; j < combos.size(); j++) {
-				comboTrend c = {get<0>(combos[j]), get<1>(combos[j]),
-												get<2>(combos[j])};
-				// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
-				// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
-				if (c.stopLoss < c.target + 1.1)
-					comboVec.emplace_back(c);
-			}
-			comboVecSize = comboVec.size() * sizeof(comboTrend);
-		} else if constexpr (is_same_v<T, comboVolTrend>) {
-			auto firstCombo = cartesian_product(indWindows[0], buyVolPercentiles[0],
-																					sellVolPercentiles[0],
-																					entryThresholds, stopLosses, targets);
+			comboVecSize = comboVec.size() * sizeof(comboAllVolPerps);
+		} else if constexpr (is_same_v<T, comboAllVolFutures>) {
+			auto firstCombo = cartesian_product(
+					indWindows[0], buyVolPercentiles[0], sellVolPercentiles[0],
+					deltaVolPercentiles[0], deltaVolPercentiles[0], stopLosses, targets,
+					contractMultipliers, periodsAfterOpen);
 			vector<decltype(firstCombo)> combos;
 			combos.emplace_back(firstCombo);
 
 			for (int i = 1; i < NUM_WINDOWS; i++) {
 				combos.emplace_back(cartesian_product(
 						indWindows[i], buyVolPercentiles[i], sellVolPercentiles[i],
-						entryThresholds, stopLosses, targets));
+						deltaVolPercentiles[i], deltaVolPercentiles[i], stopLosses, targets,
+						contractMultipliers, periodsAfterOpen));
 			}
 
 			for (int i = 0; i < NUM_WINDOWS; i++) {
 				for (unsigned int j = 0; j < combos[i].size(); j++) {
-					comboVolTrend c = {get<0>(combos[i][j]), get<1>(combos[i][j]),
-														 get<2>(combos[i][j]), get<3>(combos[i][j]),
-														 get<4>(combos[i][j]), get<5>(combos[i][j])};
+					comboAllVolFutures c = {
+							get<0>(combos[i][j]), get<1>(combos[i][j]), get<2>(combos[i][j]),
+							get<3>(combos[i][j]), get<4>(combos[i][j]), get<5>(combos[i][j]),
+							get<6>(combos[i][j]), get<7>(combos[i][j]), get<8>(combos[i][j])};
+					// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
+					// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
+					if (c.stopLoss < c.target + 1.1 &&
+							c.buyVolPercentile >= c.buyVolDeltaPercentile &&
+							c.sellVolPercentile >= -c.sellVolDeltaPercentile &&
+							c.buyVolDeltaPercentile >= 0 && c.sellVolDeltaPercentile <= 0)
+						comboVec.emplace_back(c);
+				}
+			}
+			comboVecSize = comboVec.size() * sizeof(comboAllVolFutures);
+		} else if constexpr (is_same_v<T, comboTrendPerps>) {
+			auto combos = cartesian_product(entryThresholds, stopLosses, targets,
+																			leverageMultipliers, periodsAfterOpen);
+
+			for (unsigned int j = 0; j < combos.size(); j++) {
+				comboTrendPerps c = {get<0>(combos[j]), get<1>(combos[j]),
+														 get<2>(combos[j]), get<3>(combos[j]),
+														 get<4>(combos[j])};
+				// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
+				// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
+				if (c.stopLoss < c.target + 1.1)
+					comboVec.emplace_back(c);
+			}
+			comboVecSize = comboVec.size() * sizeof(comboTrendPerps);
+		} else if constexpr (is_same_v<T, comboTrendFutures>) {
+			auto combos = cartesian_product(entryThresholds, stopLosses, targets,
+																			contractMultipliers, periodsAfterOpen);
+
+			for (unsigned int j = 0; j < combos.size(); j++) {
+				comboTrendFutures c = {get<0>(combos[j]), get<1>(combos[j]),
+															 get<2>(combos[j]), get<3>(combos[j]),
+															 get<4>(combos[j])};
+				// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
+				// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
+				if (c.stopLoss < c.target + 1.1)
+					comboVec.emplace_back(c);
+			}
+			comboVecSize = comboVec.size() * sizeof(comboTrendFutures);
+		} else if constexpr (is_same_v<T, comboVolTrendPerps>) {
+			auto firstCombo =
+					cartesian_product(indWindows[0], buyVolPercentiles[0],
+														sellVolPercentiles[0], entryThresholds, stopLosses,
+														targets, leverageMultipliers, periodsAfterOpen);
+			vector<decltype(firstCombo)> combos;
+			combos.emplace_back(firstCombo);
+
+			for (int i = 1; i < NUM_WINDOWS; i++) {
+				combos.emplace_back(cartesian_product(
+						indWindows[i], buyVolPercentiles[i], sellVolPercentiles[i],
+						entryThresholds, stopLosses, targets, leverageMultipliers,
+						periodsAfterOpen));
+			}
+
+			for (int i = 0; i < NUM_WINDOWS; i++) {
+				for (unsigned int j = 0; j < combos[i].size(); j++) {
+					comboVolTrendPerps c = {get<0>(combos[i][j]), get<1>(combos[i][j]),
+																	get<2>(combos[i][j]), get<3>(combos[i][j]),
+																	get<4>(combos[i][j]), get<5>(combos[i][j]),
+																	get<6>(combos[i][j]), get<7>(combos[i][j])};
 					// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
 					// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
 					if (c.stopLoss < c.target + 1.1)
 						comboVec.emplace_back(c);
 				}
 			}
-			comboVecSize = comboVec.size() * sizeof(comboVolTrend);
+			comboVecSize = comboVec.size() * sizeof(comboVolTrendPerps);
+		} else if constexpr (is_same_v<T, comboVolTrendFutures>) {
+			auto firstCombo =
+					cartesian_product(indWindows[0], buyVolPercentiles[0],
+														sellVolPercentiles[0], entryThresholds, stopLosses,
+														targets, contractMultipliers, periodsAfterOpen);
+			vector<decltype(firstCombo)> combos;
+			combos.emplace_back(firstCombo);
+
+			for (int i = 1; i < NUM_WINDOWS; i++) {
+				combos.emplace_back(cartesian_product(
+						indWindows[i], buyVolPercentiles[i], sellVolPercentiles[i],
+						entryThresholds, stopLosses, targets, contractMultipliers,
+						periodsAfterOpen));
+			}
+
+			for (int i = 0; i < NUM_WINDOWS; i++) {
+				for (unsigned int j = 0; j < combos[i].size(); j++) {
+					comboVolTrendFutures c = {get<0>(combos[i][j]), get<1>(combos[i][j]),
+																		get<2>(combos[i][j]), get<3>(combos[i][j]),
+																		get<4>(combos[i][j]), get<5>(combos[i][j]),
+																		get<6>(combos[i][j]), get<7>(combos[i][j])};
+					// cout << c.window << " " << c.target << " " << c.stopLoss << " " <<
+					// c.buyVolPercentile << " " << c.sellVolPercentile << endl;
+					if (c.stopLoss < c.target + 1.1)
+						comboVec.emplace_back(c);
+				}
+			}
+			comboVecSize = comboVec.size() * sizeof(comboVolTrendFutures);
 		}
 
 		numCombos = comboVec.size();
