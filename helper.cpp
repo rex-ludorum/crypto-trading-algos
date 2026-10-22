@@ -345,7 +345,7 @@ void outputMetrics(ostream &os, size_t idx, const ComboVec &comboVec,
 									 const vector<lossStreaks> &lossStreaksVec,
 									 const vector<tradeDurations> &tradeDurationsVec,
 									 const vector<wins> &winsVec, const vector<losses> &lossesVec,
-									 bool listTrades) {
+									 const vector<twap> &twapsVec, bool listTrades) {
 
 	os << fixed;
 	os << "Combo index: " << idx << endl;
@@ -542,6 +542,8 @@ void outputMetrics(ostream &os, size_t idx, const ComboVec &comboVec,
 		os << "Max trade duration: "
 			 << (double)tradeDurationsVec[idx].max / (double)ONE_MINUTE_MICROSECONDS
 			 << " minutes" << endl;
+		os << "Average TWAP: " << twapsVec[idx].mean << endl;
+		os << "Max TWAP: " << twapsVec[idx].max << endl;
 	}
 	os << defaultfloat;
 }

@@ -205,6 +205,17 @@ typedef struct __attribute__((packed)) losses {
 	double min;
 } losses;
 
+typedef struct __attribute__((packed)) twap {
+	int n;
+	double mean;
+	double max;
+	double min;
+	double prevPrice;
+	double currentNumer;
+	long currentDenom;
+	long currentTimestamp;
+} twap;
+
 #define INCREASING_BIT 0
 
 #define MICROSECONDS_IN_HOUR 3600000000
@@ -309,12 +320,18 @@ inline int computeIndicatorIdx(long window) {
 	return window / FIFTEEN_MINUTES_MICROSECONDS - 1;
 }
 
-inline void processOnlineAlgs(int index, double capital, long microseconds, double profitMargin, bool win, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+inline void processOnlineAlgs(int index, double capital, long microseconds, double profitMargin, bool win, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses, __global twap* twaps) {
 	long newTradeDuration = microseconds - tradeDurations[index].entryTimestamp;
 	tradeDurations[index].max = max(tradeDurations[index].max, newTradeDuration);
 	double oldMean = tradeDurations[index].mean;
 	tradeDurations[index].mean += ((double) newTradeDuration - tradeDurations[index].mean) / (double) ++tradeDurations[index].n;
 	tradeDurations[index].m2 += ((double) newTradeDuration - oldMean) * ((double) newTradeDuration - tradeDurations[index].mean);
+
+	double newTwap = twaps[index].currentNumer / (double) twaps[index].currentDenom;
+	twaps[index].max = max(newTwap, twaps[index].max);
+	twaps[index].min = min(newTwap, twaps[index].min);
+	oldMean = twaps[index].mean;
+	twaps[index].mean += (newTwap - twaps[index].mean) / (double) ++twaps[index].n;
 
 	if (monthlyReturns[index].nextMonth == 0)
 		monthlyReturns[index].nextMonth = getTsOfNextMonth(microseconds);
@@ -376,6 +393,18 @@ inline void processOnlineAlgs(int index, double capital, long microseconds, doub
 		wins[index].mean += (profitMargin - wins[index].mean) / (double) ++wins[index].n;
 		wins[index].m2 += (profitMargin - oldMean) * (profitMargin - wins[index].mean);
 	}
+}
+
+inline void processTWAPs(int index, long microseconds, double price, entry e, __global twap* twaps) {
+	long timeDiff = microseconds - twaps[index].currentTimestamp;
+	double increment = timeDiff * (twaps[index].prevPrice - e.price);
+	if (e.isLong)
+		twaps[index].currentNumer += increment;
+	else
+		twaps[index].currentNumer -= increment;
+	twaps[index].currentDenom += timeDiff;
+	twaps[index].currentTimestamp = microseconds;
+	twaps[index].prevPrice = price;
 }
 
 __kernel void volTrader(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolPerps* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global int* numTradesInInterval) {
@@ -450,7 +479,7 @@ __kernel void volTrader(__global int* numTrades, __global tradeWithoutDate* trad
 	numTradesInInterval[index] = tradesInInterval;
 }
 
-__kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolPerps* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+__kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolPerps* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses, __global twap* twaps) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
 	comboVolPerps c = combos[index];
@@ -483,6 +512,7 @@ __kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWit
 		int isValidTradingHours = isInTradingHours(microseconds, c.periodsAfterOpen);
 
 		if (e.price != 0.0) {
+			processTWAPs(index, microseconds, price, e, twaps);
 			double profitMargin;
 			if (e.isLong) {
 				profitMargin = price / e.price - 1;
@@ -504,7 +534,7 @@ __kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWit
 				e = (entry) {0.0, false};
 				tradesInInterval++;
 
-				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses, twaps);
 			}
 		}
 
@@ -513,10 +543,18 @@ __kernel void volTraderWithOnlineAlgs(__global int* numTrades, __global tradeWit
 				e = (entry) {price, true};
 				ls += 1;
 				tradeDurations[index].entryTimestamp = microseconds;
+				twaps[index].prevPrice = price;
+				twaps[index].currentTimestamp = microseconds;
+				twaps[index].currentNumer = 0;
+				twaps[index].currentDenom = 0;
 			} else if (sellVol >= c.sellVolPercentile) {
 				e = (entry) {price, false};
 				ss += 1;
 				tradeDurations[index].entryTimestamp = microseconds;
+				twaps[index].prevPrice = price;
+				twaps[index].currentTimestamp = microseconds;
+				twaps[index].currentNumer = 0;
+				twaps[index].currentDenom = 0;
 			}
 		}
 	}
@@ -603,7 +641,7 @@ __kernel void volTraderFutures(__global int* numTrades, __global tradeWithoutDat
 	numTradesInInterval[index] = tradesInInterval;
 }
 
-__kernel void volTraderFuturesWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolFutures* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+__kernel void volTraderFuturesWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolFutures* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses, __global twap* twaps) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
 	comboVolFutures c = combos[index];
@@ -637,6 +675,7 @@ __kernel void volTraderFuturesWithOnlineAlgs(__global int* numTrades, __global t
 		int isValidTradingHours = isInTradingHours(microseconds, c.periodsAfterOpen);
 
 		if (e.price != 0.0) {
+			processTWAPs(index, microseconds, price, e, twaps);
 			double profit, profitMargin;
 			int contracts = capital / (e.price * BTC_MARGIN_RATE) * c.contractMultiplier;
 			if (e.isLong) {
@@ -662,7 +701,7 @@ __kernel void volTraderFuturesWithOnlineAlgs(__global int* numTrades, __global t
 				e = (entry) {0.0, false};
 				tradesInInterval++;
 
-				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses, twaps);
 			}
 		}
 
@@ -671,10 +710,18 @@ __kernel void volTraderFuturesWithOnlineAlgs(__global int* numTrades, __global t
 				e = (entry) {price, true};
 				ls += 1;
 				tradeDurations[index].entryTimestamp = microseconds;
+				twaps[index].prevPrice = price;
+				twaps[index].currentTimestamp = microseconds;
+				twaps[index].currentNumer = 0;
+				twaps[index].currentDenom = 0;
 			} else if (sellVol >= c.sellVolPercentile) {
 				e = (entry) {price, false};
 				ss += 1;
 				tradeDurations[index].entryTimestamp = microseconds;
+				twaps[index].prevPrice = price;
+				twaps[index].currentTimestamp = microseconds;
+				twaps[index].currentNumer = 0;
+				twaps[index].currentDenom = 0;
 			}
 		}
 		lastPrice = price;
@@ -755,7 +802,7 @@ __kernel void volDeltaTrader(__global int* numTrades, __global tradeWithoutDate*
 	numTradesInInterval[index] = tradesInInterval;
 }
 
-__kernel void volDeltaTraderWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolDeltaPerps* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+__kernel void volDeltaTraderWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolDeltaPerps* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses, __global twap* twaps) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
 	comboVolDeltaPerps c = combos[index];
@@ -787,6 +834,7 @@ __kernel void volDeltaTraderWithOnlineAlgs(__global int* numTrades, __global tra
 		int isValidTradingHours = isInTradingHours(microseconds, c.periodsAfterOpen);
 
 		if (e.price != 0.0) {
+			processTWAPs(index, microseconds, price, e, twaps);
 			double profitMargin;
 			if (e.isLong) {
 				profitMargin = price / e.price - 1;
@@ -808,7 +856,7 @@ __kernel void volDeltaTraderWithOnlineAlgs(__global int* numTrades, __global tra
 				e = (entry) {0.0, false};
 				tradesInInterval++;
 
-				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses, twaps);
 			}
 		}
 
@@ -817,10 +865,18 @@ __kernel void volDeltaTraderWithOnlineAlgs(__global int* numTrades, __global tra
 				e = (entry) {price, true};
 				ls += 1;
 				tradeDurations[index].entryTimestamp = microseconds;
+				twaps[index].prevPrice = price;
+				twaps[index].currentTimestamp = microseconds;
+				twaps[index].currentNumer = 0;
+				twaps[index].currentDenom = 0;
 			} else if (volDelta <= c.sellVolDeltaPercentile) {
 				e = (entry) {price, false};
 				ss += 1;
 				tradeDurations[index].entryTimestamp = microseconds;
+				twaps[index].prevPrice = price;
+				twaps[index].currentTimestamp = microseconds;
+				twaps[index].currentNumer = 0;
+				twaps[index].currentDenom = 0;
 			}
 		}
 	}
@@ -906,7 +962,7 @@ __kernel void volDeltaTraderFutures(__global int* numTrades, __global tradeWitho
 	numTradesInInterval[index] = tradesInInterval;
 }
 
-__kernel void volDeltaTraderFuturesWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolDeltaFutures* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+__kernel void volDeltaTraderFuturesWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolDeltaFutures* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses, __global twap* twaps) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
 	comboVolDeltaFutures c = combos[index];
@@ -939,6 +995,7 @@ __kernel void volDeltaTraderFuturesWithOnlineAlgs(__global int* numTrades, __glo
 		int isValidTradingHours = isInTradingHours(microseconds, c.periodsAfterOpen);
 
 		if (e.price != 0.0) {
+			processTWAPs(index, microseconds, price, e, twaps);
 			double profit, profitMargin;
 			int contracts = capital / (e.price * BTC_MARGIN_RATE) * c.contractMultiplier;
 			if (e.isLong) {
@@ -964,7 +1021,7 @@ __kernel void volDeltaTraderFuturesWithOnlineAlgs(__global int* numTrades, __glo
 				e = (entry) {0.0, false};
 				tradesInInterval++;
 
-				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses, twaps);
 			}
 		}
 
@@ -973,10 +1030,18 @@ __kernel void volDeltaTraderFuturesWithOnlineAlgs(__global int* numTrades, __glo
 				e = (entry) {price, true};
 				ls += 1;
 				tradeDurations[index].entryTimestamp = microseconds;
+				twaps[index].prevPrice = price;
+				twaps[index].currentTimestamp = microseconds;
+				twaps[index].currentNumer = 0;
+				twaps[index].currentDenom = 0;
 			} else if (volDelta <= c.sellVolDeltaPercentile) {
 				e = (entry) {price, false};
 				ss += 1;
 				tradeDurations[index].entryTimestamp = microseconds;
+				twaps[index].prevPrice = price;
+				twaps[index].currentTimestamp = microseconds;
+				twaps[index].currentNumer = 0;
+				twaps[index].currentDenom = 0;
 			}
 		}
 		lastPrice = price;
@@ -1055,7 +1120,7 @@ __kernel void volExitTrader(__global int* numTrades, __global tradeWithoutDate* 
 	numTradesInInterval[index] = tradesInInterval;
 }
 
-__kernel void volExitTraderWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolExitPerps* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+__kernel void volExitTraderWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolExitPerps* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses, __global twap* twaps) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
 	comboVolExitPerps c = combos[index];
@@ -1085,6 +1150,7 @@ __kernel void volExitTraderWithOnlineAlgs(__global int* numTrades, __global trad
 		int isValidTradingHours = isInTradingHours(microseconds, c.periodsAfterOpen);
 
 		if (e.price != 0.0) {
+			processTWAPs(index, microseconds, price, e, twaps);
 			double profitMargin;
 			if (e.isLong) {
 				profitMargin = price / e.price - 1;
@@ -1106,7 +1172,7 @@ __kernel void volExitTraderWithOnlineAlgs(__global int* numTrades, __global trad
 				e = (entry) {0.0, false};
 				tradesInInterval++;
 
-				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses, twaps);
 			}
 		}
 
@@ -1115,10 +1181,18 @@ __kernel void volExitTraderWithOnlineAlgs(__global int* numTrades, __global trad
 				e = (entry) {price, true};
 				ls += 1;
 				tradeDurations[index].entryTimestamp = microseconds;
+				twaps[index].prevPrice = price;
+				twaps[index].currentTimestamp = microseconds;
+				twaps[index].currentNumer = 0;
+				twaps[index].currentDenom = 0;
 			} else if (sellVol >= c.sellVolPercentile) {
 				e = (entry) {price, false};
 				ss += 1;
 				tradeDurations[index].entryTimestamp = microseconds;
+				twaps[index].prevPrice = price;
+				twaps[index].currentTimestamp = microseconds;
+				twaps[index].currentNumer = 0;
+				twaps[index].currentDenom = 0;
 			}
 		}
 	}
@@ -1204,7 +1278,7 @@ __kernel void volExitTraderFutures(__global int* numTrades, __global tradeWithou
 	numTradesInInterval[index] = tradesInInterval;
 }
 
-__kernel void volExitTraderFuturesWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolExitFutures* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+__kernel void volExitTraderFuturesWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolExitFutures* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses, __global twap* twaps) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
 	comboVolExitFutures c = combos[index];
@@ -1235,6 +1309,7 @@ __kernel void volExitTraderFuturesWithOnlineAlgs(__global int* numTrades, __glob
 		int isValidTradingHours = isInTradingHours(microseconds, c.periodsAfterOpen);
 
 		if (e.price != 0.0) {
+			processTWAPs(index, microseconds, price, e, twaps);
 			double profit, profitMargin;
 			int contracts = capital / (e.price * BTC_MARGIN_RATE) * c.contractMultiplier;
 			if (e.isLong) {
@@ -1262,7 +1337,7 @@ __kernel void volExitTraderFuturesWithOnlineAlgs(__global int* numTrades, __glob
 				e = (entry) {0.0, false};
 				tradesInInterval++;
 
-				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses, twaps);
 			}
 		}
 
@@ -1271,10 +1346,18 @@ __kernel void volExitTraderFuturesWithOnlineAlgs(__global int* numTrades, __glob
 				e = (entry) {price, true};
 				ls += 1;
 				tradeDurations[index].entryTimestamp = microseconds;
+				twaps[index].prevPrice = price;
+				twaps[index].currentTimestamp = microseconds;
+				twaps[index].currentNumer = 0;
+				twaps[index].currentDenom = 0;
 			} else if (sellVol >= c.sellVolPercentile) {
 				e = (entry) {price, false};
 				ss += 1;
 				tradeDurations[index].entryTimestamp = microseconds;
+				twaps[index].prevPrice = price;
+				twaps[index].currentTimestamp = microseconds;
+				twaps[index].currentNumer = 0;
+				twaps[index].currentDenom = 0;
 			}
 		}
 		lastPrice = price;
@@ -1357,7 +1440,7 @@ __kernel void allVol(__global int* numTrades, __global tradeWithoutDate* trades,
 	numTradesInInterval[index] = tradesInInterval;
 }
 
-__kernel void allVolWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboAllVolPerps* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+__kernel void allVolWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboAllVolPerps* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses, __global twap* twaps) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
 	comboAllVolPerps c = combos[index];
@@ -1391,6 +1474,7 @@ __kernel void allVolWithOnlineAlgs(__global int* numTrades, __global tradeWithou
 		int isValidTradingHours = isInTradingHours(microseconds, c.periodsAfterOpen);
 
 		if (e.price != 0.0) {
+			processTWAPs(index, microseconds, price, e, twaps);
 			double profitMargin;
 			if (e.isLong) {
 				profitMargin = price / e.price - 1;
@@ -1412,7 +1496,7 @@ __kernel void allVolWithOnlineAlgs(__global int* numTrades, __global tradeWithou
 				e = (entry) {0.0, false};
 				tradesInInterval++;
 
-				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses, twaps);
 			}
 		}
 
@@ -1421,10 +1505,18 @@ __kernel void allVolWithOnlineAlgs(__global int* numTrades, __global tradeWithou
 				e = (entry) {price, true};
 				ls += 1;
 				tradeDurations[index].entryTimestamp = microseconds;
+				twaps[index].prevPrice = price;
+				twaps[index].currentTimestamp = microseconds;
+				twaps[index].currentNumer = 0;
+				twaps[index].currentDenom = 0;
 			} else if (sellVol >= c.sellVolPercentile && volDelta <= c.sellVolDeltaPercentile) {
 				e = (entry) {price, false};
 				ss += 1;
 				tradeDurations[index].entryTimestamp = microseconds;
+				twaps[index].prevPrice = price;
+				twaps[index].currentTimestamp = microseconds;
+				twaps[index].currentNumer = 0;
+				twaps[index].currentDenom = 0;
 			}
 		}
 	}
@@ -1512,7 +1604,7 @@ __kernel void allVolFutures(__global int* numTrades, __global tradeWithoutDate* 
 	numTradesInInterval[index] = tradesInInterval;
 }
 
-__kernel void allVolFuturesWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboAllVolFutures* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+__kernel void allVolFuturesWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboAllVolFutures* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses, __global twap* twaps) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
 	comboAllVolFutures c = combos[index];
@@ -1547,6 +1639,7 @@ __kernel void allVolFuturesWithOnlineAlgs(__global int* numTrades, __global trad
 		int isValidTradingHours = isInTradingHours(microseconds, c.periodsAfterOpen);
 
 		if (e.price != 0.0) {
+			processTWAPs(index, microseconds, price, e, twaps);
 			double profit, profitMargin;
 			int contracts = capital / (e.price * BTC_MARGIN_RATE) * c.contractMultiplier;
 			if (e.isLong) {
@@ -1572,7 +1665,7 @@ __kernel void allVolFuturesWithOnlineAlgs(__global int* numTrades, __global trad
 				e = (entry) {0.0, false};
 				tradesInInterval++;
 
-				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses, twaps);
 			}
 		}
 
@@ -1581,10 +1674,18 @@ __kernel void allVolFuturesWithOnlineAlgs(__global int* numTrades, __global trad
 				e = (entry) {price, true};
 				ls += 1;
 				tradeDurations[index].entryTimestamp = microseconds;
+				twaps[index].prevPrice = price;
+				twaps[index].currentTimestamp = microseconds;
+				twaps[index].currentNumer = 0;
+				twaps[index].currentDenom = 0;
 			} else if (sellVol >= c.sellVolPercentile && volDelta <= c.sellVolDeltaPercentile) {
 				e = (entry) {price, false};
 				ss += 1;
 				tradeDurations[index].entryTimestamp = microseconds;
+				twaps[index].prevPrice = price;
+				twaps[index].currentTimestamp = microseconds;
+				twaps[index].currentNumer = 0;
+				twaps[index].currentDenom = 0;
 			}
 		}
 		lastPrice = price;
@@ -1691,7 +1792,7 @@ __kernel void trendFollower(__global int* numTrades, __global tradeWithoutDate* 
 	numTradesInInterval[index] = tradesInInterval;
 }
 
-__kernel void trendFollowerWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboTrendPerps* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+__kernel void trendFollowerWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboTrendPerps* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses, __global twap* twaps) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
 	comboTrendPerps c = combos[index];
@@ -1724,6 +1825,7 @@ __kernel void trendFollowerWithOnlineAlgs(__global int* numTrades, __global trad
 		int isValidTradingHours = isInTradingHours(microseconds, c.periodsAfterOpen);
 
 		if (e.price != 0.0) {
+			processTWAPs(index, microseconds, price, e, twaps);
 			double profitMargin;
 			if (e.isLong) {
 				profitMargin = price / e.price - 1;
@@ -1745,7 +1847,7 @@ __kernel void trendFollowerWithOnlineAlgs(__global int* numTrades, __global trad
 				e = (entry) {0.0, false};
 				tradesInInterval++;
 
-				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses, twaps);
 			}
 		}
 
@@ -1760,12 +1862,20 @@ __kernel void trendFollowerWithOnlineAlgs(__global int* numTrades, __global trad
 					e = (entry) {price, false};
 					ss += 1;
 					tradeDurations[index].entryTimestamp = microseconds;
+					twaps[index].prevPrice = price;
+					twaps[index].currentTimestamp = microseconds;
+					twaps[index].currentNumer = 0;
+					twaps[index].currentDenom = 0;
 				}
 			} else if (price / minPrice >= precomputedLongEntryThreshold) {
 				if (e.price == 0.0 && isValidTradingHours) {
 					e = (entry) {price, true};
 					ls += 1;
 					tradeDurations[index].entryTimestamp = microseconds;
+					twaps[index].prevPrice = price;
+					twaps[index].currentTimestamp = microseconds;
+					twaps[index].currentNumer = 0;
+					twaps[index].currentDenom = 0;
 				}
 			}
 		} else {
@@ -1777,12 +1887,20 @@ __kernel void trendFollowerWithOnlineAlgs(__global int* numTrades, __global trad
 					e = (entry) {price, true};
 					ls += 1;
 					tradeDurations[index].entryTimestamp = microseconds;
+					twaps[index].prevPrice = price;
+					twaps[index].currentTimestamp = microseconds;
+					twaps[index].currentNumer = 0;
+					twaps[index].currentDenom = 0;
 				}
 			} else if (price / maxPrice <= precomputedShortEntryThreshold) {
 				if (e.price == 0.0 && isValidTradingHours) {
 					e = (entry) {price, false};
 					ss += 1;
 					tradeDurations[index].entryTimestamp = microseconds;
+					twaps[index].prevPrice = price;
+					twaps[index].currentTimestamp = microseconds;
+					twaps[index].currentNumer = 0;
+					twaps[index].currentDenom = 0;
 				}
 			}
 		}
@@ -1896,7 +2014,7 @@ __kernel void trendFollowerFutures(__global int* numTrades, __global tradeWithou
 	numTradesInInterval[index] = tradesInInterval;
 }
 
-__kernel void trendFollowerFuturesWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboTrendFutures* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+__kernel void trendFollowerFuturesWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboTrendFutures* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global positionData* positionDatas, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses, __global twap* twaps) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
 	comboTrendFutures c = combos[index];
@@ -1930,6 +2048,7 @@ __kernel void trendFollowerFuturesWithOnlineAlgs(__global int* numTrades, __glob
 		int isValidTradingHours = isInTradingHours(microseconds, c.periodsAfterOpen);
 
 		if (e.price != 0.0) {
+			processTWAPs(index, microseconds, price, e, twaps);
 			double profit, profitMargin;
 			int contracts = capital / (e.price * BTC_MARGIN_RATE) * c.contractMultiplier;
 			if (e.isLong) {
@@ -1955,7 +2074,7 @@ __kernel void trendFollowerFuturesWithOnlineAlgs(__global int* numTrades, __glob
 				e = (entry) {0.0, false};
 				tradesInInterval++;
 
-				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses, twaps);
 			}
 		}
 
@@ -1970,12 +2089,20 @@ __kernel void trendFollowerFuturesWithOnlineAlgs(__global int* numTrades, __glob
 					e = (entry) {price, false};
 					ss += 1;
 					tradeDurations[index].entryTimestamp = microseconds;
+					twaps[index].prevPrice = price;
+					twaps[index].currentTimestamp = microseconds;
+					twaps[index].currentNumer = 0;
+					twaps[index].currentDenom = 0;
 				}
 			} else if (price / minPrice >= precomputedLongEntryThreshold) {
 				if (e.price == 0.0 && isValidTradingHours) {
 					e = (entry) {price, true};
 					ls += 1;
 					tradeDurations[index].entryTimestamp = microseconds;
+					twaps[index].prevPrice = price;
+					twaps[index].currentTimestamp = microseconds;
+					twaps[index].currentNumer = 0;
+					twaps[index].currentDenom = 0;
 				}
 			}
 		} else {
@@ -1987,12 +2114,20 @@ __kernel void trendFollowerFuturesWithOnlineAlgs(__global int* numTrades, __glob
 					e = (entry) {price, true};
 					ls += 1;
 					tradeDurations[index].entryTimestamp = microseconds;
+					twaps[index].prevPrice = price;
+					twaps[index].currentTimestamp = microseconds;
+					twaps[index].currentNumer = 0;
+					twaps[index].currentDenom = 0;
 				}
 			} else if (price / maxPrice <= precomputedShortEntryThreshold) {
 				if (e.price == 0.0 && isValidTradingHours) {
 					e = (entry) {price, false};
 					ss += 1;
 					tradeDurations[index].entryTimestamp = microseconds;
+					twaps[index].prevPrice = price;
+					twaps[index].currentTimestamp = microseconds;
+					twaps[index].currentNumer = 0;
+					twaps[index].currentDenom = 0;
 				}
 			}
 		}
@@ -2106,7 +2241,7 @@ __kernel void volTrendTrader(__global int* numTrades, __global tradeWithoutDate*
 	numTradesInInterval[index] = tradesInInterval;
 }
 
-__kernel void volTrendTraderWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolTrendPerps* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global positionData* positionDatas, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+__kernel void volTrendTraderWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolTrendPerps* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global positionData* positionDatas, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses, __global twap* twaps) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
 	comboVolTrendPerps c = combos[index];
@@ -2146,6 +2281,7 @@ __kernel void volTrendTraderWithOnlineAlgs(__global int* numTrades, __global tra
 		int isValidTradingHours = isInTradingHours(microseconds, c.periodsAfterOpen);
 
 		if (e.price != 0.0) {
+			processTWAPs(index, microseconds, price, e, twaps);
 			double profitMargin;
 			if (e.isLong) {
 				profitMargin = price / e.price - 1;
@@ -2167,7 +2303,7 @@ __kernel void volTrendTraderWithOnlineAlgs(__global int* numTrades, __global tra
 				e = (entry) {0.0, false};
 				tradesInInterval++;
 
-				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses, twaps);
 			}
 		}
 
@@ -2180,12 +2316,20 @@ __kernel void volTrendTraderWithOnlineAlgs(__global int* numTrades, __global tra
 					e = (entry) {price, false};
 					ss += 1;
 					tradeDurations[index].entryTimestamp = microseconds;
+					twaps[index].prevPrice = price;
+					twaps[index].currentTimestamp = microseconds;
+					twaps[index].currentNumer = 0;
+					twaps[index].currentDenom = 0;
 				}
 			} else if (price / minPrice >= precomputedLongEntryThreshold) {
 				if (e.price == 0.0 && isValidTradingHours && buyVol >= c.buyVolPercentile) {
 					e = (entry) {price, true};
 					ls += 1;
 					tradeDurations[index].entryTimestamp = microseconds;
+					twaps[index].prevPrice = price;
+					twaps[index].currentTimestamp = microseconds;
+					twaps[index].currentNumer = 0;
+					twaps[index].currentDenom = 0;
 				}
 			}
 		} else {
@@ -2197,12 +2341,20 @@ __kernel void volTrendTraderWithOnlineAlgs(__global int* numTrades, __global tra
 					e = (entry) {price, true};
 					ls += 1;
 					tradeDurations[index].entryTimestamp = microseconds;
+					twaps[index].prevPrice = price;
+					twaps[index].currentTimestamp = microseconds;
+					twaps[index].currentNumer = 0;
+					twaps[index].currentDenom = 0;
 				}
 			} else if (price / maxPrice <= precomputedShortEntryThreshold) {
 				if (e.price == 0.0 && isValidTradingHours && sellVol >= c.sellVolPercentile) {
 					e = (entry) {price, false};
 					ss += 1;
 					tradeDurations[index].entryTimestamp = microseconds;
+					twaps[index].prevPrice = price;
+					twaps[index].currentTimestamp = microseconds;
+					twaps[index].currentNumer = 0;
+					twaps[index].currentDenom = 0;
 				}
 			}
 		}
@@ -2321,7 +2473,7 @@ __kernel void volTrendTraderFutures(__global int* numTrades, __global tradeWitho
 	numTradesInInterval[index] = tradesInInterval;
 }
 
-__kernel void volTrendTraderFuturesWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolTrendFutures* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global positionData* positionDatas, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses) {
+__kernel void volTrendTraderFuturesWithOnlineAlgs(__global int* numTrades, __global tradeWithoutDate* trades, __global comboVolTrendFutures* combos, __global entry* entries, __global tradeRecord* tradeRecords, __global indicators* inds, __global positionData* positionDatas, __global drawdowns* drawdowns, __global drawdownLengths* drawdownLengths, __global lossStreaks* lossStreaks, __global tradeDurations* tradeDurations, __global monthlyReturns* monthlyReturns, __global wins* wins, __global losses* losses, __global twap* twaps) {
 	int index = get_global_id(0);
 	double capital = tradeRecords[index].capital;
 	comboVolTrendFutures c = combos[index];
@@ -2362,6 +2514,7 @@ __kernel void volTrendTraderFuturesWithOnlineAlgs(__global int* numTrades, __glo
 		int isValidTradingHours = isInTradingHours(microseconds, c.periodsAfterOpen);
 
 		if (e.price != 0.0) {
+			processTWAPs(index, microseconds, price, e, twaps);
 			double profit, profitMargin;
 			int contracts = capital / (e.price * BTC_MARGIN_RATE) * c.contractMultiplier;
 			if (e.isLong) {
@@ -2387,7 +2540,7 @@ __kernel void volTrendTraderFuturesWithOnlineAlgs(__global int* numTrades, __glo
 				e = (entry) {0.0, false};
 				tradesInInterval++;
 
-				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses);
+				processOnlineAlgs(index, capital, microseconds, profitMargin, win, drawdowns, drawdownLengths, lossStreaks, tradeDurations, monthlyReturns, wins, losses, twaps);
 			}
 		}
 
@@ -2400,12 +2553,20 @@ __kernel void volTrendTraderFuturesWithOnlineAlgs(__global int* numTrades, __glo
 					e = (entry) {price, false};
 					ss += 1;
 					tradeDurations[index].entryTimestamp = microseconds;
+					twaps[index].prevPrice = price;
+					twaps[index].currentTimestamp = microseconds;
+					twaps[index].currentNumer = 0;
+					twaps[index].currentDenom = 0;
 				}
 			} else if (price / minPrice >= precomputedLongEntryThreshold) {
 				if (e.price == 0.0 && isValidTradingHours && buyVol >= c.buyVolPercentile) {
 					e = (entry) {price, true};
 					ls += 1;
 					tradeDurations[index].entryTimestamp = microseconds;
+					twaps[index].prevPrice = price;
+					twaps[index].currentTimestamp = microseconds;
+					twaps[index].currentNumer = 0;
+					twaps[index].currentDenom = 0;
 				}
 			}
 		} else {
@@ -2417,12 +2578,20 @@ __kernel void volTrendTraderFuturesWithOnlineAlgs(__global int* numTrades, __glo
 					e = (entry) {price, true};
 					ls += 1;
 					tradeDurations[index].entryTimestamp = microseconds;
+					twaps[index].prevPrice = price;
+					twaps[index].currentTimestamp = microseconds;
+					twaps[index].currentNumer = 0;
+					twaps[index].currentDenom = 0;
 				}
 			} else if (price / maxPrice <= precomputedShortEntryThreshold) {
 				if (e.price == 0.0 && isValidTradingHours && sellVol >= c.sellVolPercentile) {
 					e = (entry) {price, false};
 					ss += 1;
 					tradeDurations[index].entryTimestamp = microseconds;
+					twaps[index].prevPrice = price;
+					twaps[index].currentTimestamp = microseconds;
+					twaps[index].currentNumer = 0;
+					twaps[index].currentDenom = 0;
 				}
 			}
 		}

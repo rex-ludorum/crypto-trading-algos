@@ -313,6 +313,17 @@ struct __attribute__((packed)) tradeRecord {
 	cl_int longLosses;
 };
 
+struct __attribute__((packed)) twap {
+	cl_int n;
+	cl_double mean;
+	cl_double max;
+	cl_double min;
+	cl_double prevPrice;
+	cl_double currentNumer;
+	cl_long currentDenom;
+	cl_long currentTimestamp;
+};
+
 tradeWithoutDate convertTrade(const trade &orig);
 
 string convertTsToDate(long long ts);
@@ -331,6 +342,6 @@ void outputMetrics(ostream &os, size_t idx, const ComboVec &comboVec,
 									 const vector<lossStreaks> &lossStreaksVec,
 									 const vector<tradeDurations> &tradeDurationsVec,
 									 const vector<wins> &winsVec, const vector<losses> &lossesVec,
-									 bool listTrades);
+									 const vector<twap> &twapsVec, bool listTrades);
 
 #endif
