@@ -7,6 +7,7 @@
 #include <ios>
 #include <iostream>
 #include <ranges>
+#include <signal.h>
 #include <string>
 #include <unistd.h>
 #include <vector>
@@ -44,19 +45,38 @@ using std::ranges::views::cartesian_product;
 using std::cout;
 using std::endl;
 
-#define INCREMENT 1000000
-#define TRADE_CHUNK 50000000
+#define INCREMENT 500000
+#define TRADE_CHUNK 500000
 
 #define PERCENTILE_CEILING 30
 #define PERCENTILE_FLOOR 12
 
 static size_t newStart = 0;
-static size_t globalIdx = 0;
+static size_t globalIdx = 0, startingIdx = 0;
 static string snapshotFilename;
+
+bool listTrades = false;
+
+Mode mode;
 
 cl::Program program; // The program that will run on the device.
 cl::Context context; // The context which holds the device.
 cl::Device device;	 // The device where the kernel will run.
+
+vector<entry> entriesVec;
+vector<tradeRecord> tradeRecordsVec;
+vector<positionData> positionDatasVec;
+
+vector<drawdowns> drawdownsVec;
+vector<drawdownLengths> drawdownLengthsVec;
+vector<lossStreaks> lossStreaksVec;
+vector<tradeDurations> tradeDurationsVec;
+vector<monthlyReturns> monthlyReturnsVec;
+vector<wins> winsVec;
+vector<losses> lossesVec;
+vector<twap> twapsVec;
+
+vector<cl_int> numTradesInIntervalVec;
 
 void computeIndicators(const vector<tradeWithoutDate> &tradesWithoutDates,
 											 vector<indicators> &inds, vector<timeWindow> &tws,
@@ -137,7 +157,6 @@ void saveSnapshot(size_t index, size_t start, const vector<entry> &entriesVec,
 	case Mode::AllVolume:
 	case Mode::VolumeTrend:
 		file.write(reinterpret_cast<const char *>(&start), sizeof(start));
-		break;
 	case Mode::Trend:
 		break;
 	}
@@ -190,7 +209,6 @@ void saveSnapshot(size_t index, size_t start, const vector<entry> &entriesVec,
 	case Mode::AllVolume:
 	case Mode::VolumeTrend:
 		file.write(reinterpret_cast<const char *>(&start), sizeof(start));
-		break;
 	case Mode::Trend:
 		break;
 	}
@@ -285,6 +303,7 @@ int processTrades(
 			break;
 		}
 
+		auto beforeKernelTime = high_resolution_clock::now();
 		cout << "Running trades " << currIdx << "-" << currIdx + currSize - 1
 				 << " (" << globalIdx << "-" << globalIdx + currSize - 1 << ")" << endl;
 		err = queue.enqueueNDRangeKernel(kernel, cl::NullRange,
@@ -293,6 +312,17 @@ int processTrades(
 			cout << "Error for kernel: " << err << endl;
 			return -1;
 		}
+
+		err = queue.finish();
+		if (err != CL_SUCCESS) {
+			cout << "Error for finish: " << err << endl;
+			return -1;
+		}
+		auto duration = duration_cast<microseconds>(high_resolution_clock::now() -
+																								beforeKernelTime);
+		cout << "Time taken to run kernel: " << (double)duration.count() / 1000000
+				 << " seconds" << endl;
+
 		err = queue.enqueueReadBuffer(numTradesInIntervalBuf, CL_FALSE, 0,
 																	numCombos * sizeof(cl_int),
 																	&numTradesInIntervalVec[0]);
@@ -343,7 +373,7 @@ int processTrades(
 	inds.erase(inds.begin(), inds.begin() + minTradeIdx);
 
 	if (snapshotting) {
-		auto beforeSnapshotTime = high_resolution_clock::now();
+		auto beforeReadTime = high_resolution_clock::now();
 		err = queue.enqueueReadBuffer(entries, CL_FALSE, 0,
 																	numCombos * sizeof(entry), &entriesVec[0]);
 		if (err != CL_SUCCESS) {
@@ -381,12 +411,19 @@ int processTrades(
 			cout << "Error for finish: " << err << endl;
 			return -1;
 		}
+		auto beforeSnapshotTime = high_resolution_clock::now();
+		auto duration =
+				duration_cast<microseconds>(beforeSnapshotTime - beforeReadTime);
+		cout << "Time taken to read buffers: " << (double)duration.count() / 1000000
+				 << " seconds" << endl;
+		/*
 		saveSnapshot(globalIdx, newStart, entriesVec, tradeRecordsVec,
 								 positionDatasVec, numTradesInIntervalVec, mode);
-		auto duration = duration_cast<microseconds>(high_resolution_clock::now() -
+		duration = duration_cast<microseconds>(high_resolution_clock::now() -
 																								beforeSnapshotTime);
 		cout << "Time taken to take snapshot: "
 				 << (double)duration.count() / 1000000 << " seconds" << endl;
+		*/
 	}
 
 	return maxTradesPerInterval;
@@ -451,6 +488,7 @@ void processTradesWithOnlineAlgs(
 			break;
 		}
 
+		auto beforeKernelTime = high_resolution_clock::now();
 		cout << "Running trades " << currIdx << "-" << currIdx + currSize - 1
 				 << " (" << globalIdx << "-" << globalIdx + currSize - 1 << ")" << endl;
 		err = queue.enqueueNDRangeKernel(kernel, cl::NullRange,
@@ -465,6 +503,10 @@ void processTradesWithOnlineAlgs(
 			cout << "Error for finish: " << err << endl;
 			return;
 		}
+		auto duration = duration_cast<microseconds>(high_resolution_clock::now() -
+																								beforeKernelTime);
+		cout << "Time taken to run kernel: " << (double)duration.count() / 1000000
+				 << " seconds" << endl;
 
 		globalIdx += currSize;
 		currIdx += currSize;
@@ -494,7 +536,7 @@ void processTradesWithOnlineAlgs(
 	inds.erase(inds.begin(), inds.begin() + minTradeIdx);
 
 	if (snapshotting) {
-		auto beforeSnapshotTime = high_resolution_clock::now();
+		auto beforeReadTime = high_resolution_clock::now();
 		err = queue.enqueueReadBuffer(entries, CL_FALSE, 0,
 																	numCombos * sizeof(entry), &entriesVec[0]);
 		if (err != CL_SUCCESS) {
@@ -585,25 +627,53 @@ void processTradesWithOnlineAlgs(
 			cout << "Error for finish: " << err << endl;
 			return;
 		}
+		auto beforeSnapshotTime = high_resolution_clock::now();
+		auto duration =
+				duration_cast<microseconds>(beforeSnapshotTime - beforeReadTime);
+		cout << "Time taken to read buffers: " << (double)duration.count() / 1000000
+				 << " seconds" << endl;
+		/*
 		saveSnapshot(globalIdx, newStart, entriesVec, tradeRecordsVec,
 								 positionDatasVec, drawdownsVec, drawdownLengthsVec,
 								 lossStreaksVec, tradeDurationsVec, monthlyReturnsVec, winsVec,
 								 lossesVec, twapsVec, mode);
-		auto duration = duration_cast<microseconds>(high_resolution_clock::now() -
+		duration = duration_cast<microseconds>(high_resolution_clock::now() -
 																								beforeSnapshotTime);
 		cout << "Time taken to take snapshot: "
 				 << (double)duration.count() / 1000000 << " seconds" << endl;
+		*/
 	}
 
 	return;
 }
 
+void handler(int s) {
+	cout << "Caught signal " << s << endl;
+	if (globalIdx != startingIdx) {
+		auto beforeSnapshotTime = high_resolution_clock::now();
+		if (listTrades)
+			saveSnapshot(globalIdx, newStart, entriesVec, tradeRecordsVec,
+									 positionDatasVec, drawdownsVec, drawdownLengthsVec,
+									 lossStreaksVec, tradeDurationsVec, monthlyReturnsVec,
+									 winsVec, lossesVec, twapsVec, mode);
+		else
+			saveSnapshot(globalIdx, newStart, entriesVec, tradeRecordsVec,
+									 positionDatasVec, numTradesInIntervalVec, mode);
+		auto duration = duration_cast<microseconds>(high_resolution_clock::now() -
+																								beforeSnapshotTime);
+		cout << "Time taken to take snapshot: "
+				 << (double)duration.count() / 1000000 << " seconds" << endl;
+	}
+	exit(0);
+}
+
 int main(int argc, char *argv[]) {
-	bool writeResults = false, listTrades = false, snapshotting = false,
-			 futures = false;
+	signal(SIGINT, handler);
+
+	bool writeResults = false, snapshotting = false, futures = false;
 
 	bool isBTC;
-	Mode mode;
+	// Mode mode;
 	string modeString;
 
 	int opt;
@@ -1187,10 +1257,13 @@ int main(int argc, char *argv[]) {
 
 	bool initializedPositions = false;
 
-	vector<entry> entriesVec(numCombos, {0.0, 0});
+	// vector<entry> entriesVec(numCombos, {0.0, 0});
+	entriesVec = vector<entry>(numCombos, {0.0, 0});
 	size_t entriesVecSize = entriesVec.size() * sizeof(entry);
-	vector<tradeRecord> tradeRecordsVec(numCombos,
-																			{STARTING_CAPITAL, 0, 0, 0, 0, 0, 0});
+	// vector<tradeRecord> tradeRecordsVec(numCombos,
+	// 																		{STARTING_CAPITAL, 0, 0, 0, 0, 0, 0});
+	tradeRecordsVec =
+			vector<tradeRecord>(numCombos, {STARTING_CAPITAL, 0, 0, 0, 0, 0, 0});
 	size_t tradeRecordsVecSize = tradeRecordsVec.size() * sizeof(tradeRecord);
 
 	ifstream snapshotFile;
@@ -1209,6 +1282,7 @@ int main(int argc, char *argv[]) {
 				return 1;
 			}
 			cout << "globalIdx: " << globalIdx << endl;
+			startingIdx = globalIdx;
 
 			switch (mode) {
 			case Mode::Volume:
@@ -1450,24 +1524,24 @@ int main(int argc, char *argv[]) {
 		break;
 	}
 
-	vector<drawdowns> drawdownsVec;
+	// vector<drawdowns> drawdownsVec;
 	cl::Buffer drawdownsBuf;
-	vector<drawdownLengths> drawdownLengthsVec;
+	// vector<drawdownLengths> drawdownLengthsVec;
 	cl::Buffer drawdownLengthsBuf;
-	vector<lossStreaks> lossStreaksVec;
+	// vector<lossStreaks> lossStreaksVec;
 	cl::Buffer lossStreaksBuf;
-	vector<tradeDurations> tradeDurationsVec;
+	// vector<tradeDurations> tradeDurationsVec;
 	cl::Buffer tradeDurationsBuf;
-	vector<monthlyReturns> monthlyReturnsVec;
+	// vector<monthlyReturns> monthlyReturnsVec;
 	cl::Buffer monthlyReturnsBuf;
-	vector<wins> winsVec;
+	// vector<wins> winsVec;
 	cl::Buffer winsBuf;
-	vector<losses> lossesVec;
+	// vector<losses> lossesVec;
 	cl::Buffer lossesBuf;
-	vector<twap> twapsVec;
+	// vector<twap> twapsVec;
 	cl::Buffer twapsBuf;
 
-	vector<cl_int> numTradesInIntervalVec;
+	// vector<cl_int> numTradesInIntervalVec;
 	cl::Buffer numTradesInIntervalBuf;
 
 	cout << "Number of combinations: " << numCombos << endl;
