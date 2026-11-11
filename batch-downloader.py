@@ -22,6 +22,8 @@ MAX_WINDOW_SIZE = 200
 MIN_WINDOW_SIZE = 40
 MAX_OFFSET = 120
 
+WAIT_STATUS_CODES = [401, 404, 429, 500, 502, 503, 504, 524]
+
 class RetVal(Enum):
 	WAIT = auto()
 	SUCCESS = auto()
@@ -39,7 +41,7 @@ def prepareRecord(response):
 	if 'ask' in response:
 		response.pop('ask')
 
-	makerSide = response['side']
+	makerSide = response['side'].upper()
 	if (makerSide != 'BUY' and makerSide != 'SELL'):
 		'''
 		print("Unknown maker side for " + json.dumps(response))
@@ -58,8 +60,8 @@ def prepareRecord(response):
 	record = [
 		str(microseconds),
 		str(tradeId),
-		str(response['price']),
-		str(response['size']),
+		str(response['price']).rstrip("0"),
+		str(response['size']).rstrip("0"),
 		str(isBuyerMaker)
 	]
 	return record
@@ -127,6 +129,7 @@ def handleGap(startTime, startId, endTime, endId):
 			print(logMsg)
 			prevLastTradeId = startId
 			missedTrades = []
+			lastResponse = {}
 			startingLastTradeId = startId
 
 			# Use a three-second-minimum window since the max observed trades in a one-second window was 260 on Feb 28 2024
@@ -135,13 +138,15 @@ def handleGap(startTime, startId, endTime, endId):
 			windowOffset = computeOffset(windows)
 
 			while True:
-				while (retVal := getGap(endId, min(startTime + windowOffset, endTime), startTime, lastTrade, missedTrades, windows, file)) == RetVal.WAIT:
+				endRequestTime = min(startTime + windowOffset, endTime)
+				isEndOfRange = endRequestTime >= endTime
+				while (retVal := getGap(endId, endRequestTime, startTime, isEndOfRange, lastTrade, missedTrades, windows, lastResponse, file)) == RetVal.WAIT:
 					# Rate limit is 30 requests per second
 					time.sleep(1 / 30)
 
 				if retVal == RetVal.FAILURE:
 					break
-				if retVal == RetVal.SUCCESS and startTime + windowOffset >= endTime or endId == int(lastTrade['tradeId']) + 1:
+				if retVal == RetVal.SUCCESS and isEndOfRange or endId == int(lastTrade['tradeId']) + 1:
 					break
 
 				if retVal == RetVal.GAP_EXCEEDED:
@@ -169,7 +174,7 @@ def handleGap(startTime, startId, endTime, endId):
 				errMsg = "Gaps still exist between %s and %s: %s\n" % (startingLastTradeId, endId, ", ".join(getMissedRanges(missedTrades)))
 				printError(RuntimeError(errMsg))
 
-def getGap(endId, endTime, startTime, lastTrade, missedTrades, windows, file):
+def getGap(endId, endTime, startTime, isEndOfRange, lastTrade, missedTrades, windows, lastResponse, file):
 	url = "https://api.coinbase.com/api/v3/brokerage/products/%s/ticker" % (symbol)
 	params = {"limit": MAX_REST_API_TRADES, "start": str(startTime), "end": str(endTime)}
 	jwt_uri = jwt_generator.format_jwt_uri("GET", "/api/v3/brokerage/products/%s/ticker" % (symbol))
@@ -187,20 +192,25 @@ def getGap(endId, endTime, startTime, lastTrade, missedTrades, windows, file):
 		if not responseTrades:
 			logMsg = "HTTP response contains 0 trades"
 			print(logMsg)
-			return RetVal.SUCCESS
+			if not isEndOfRange:
+				return RetVal.SUCCESS
 
 		cleanTrades(responseTrades)
 		if not responseTrades:
 			logMsg = "HTTP response contains 0 trades (after cleaning)"
 			print(logMsg)
-			return RetVal.SUCCESS
+			if not isEndOfRange:
+				return RetVal.SUCCESS
 
 		logMsg = "HTTP response contains %d trades (%s) (%s - %s)" % (len(responseTrades), ", ".join(getRanges(responseTrades)), responseTrades[0]['time'], responseTrades[-1]['time'])
 		print(logMsg)
 		# print(responseTrades)
 
 		tradeId = int(lastTrade['tradeId']) + 1
-		idx = next((i for i, x in enumerate(responseTrades) if int(x['trade_id']) >= tradeId), -1)
+		if len(responseTrades) == 0:
+			idx = -1
+		else:
+			idx = next((i for i, x in enumerate(responseTrades) if int(x['trade_id']) >= tradeId), -1)
 		if idx != -1:
 			if length >= MAX_REST_API_TRADES and endTime - startTime > 1:
 				lastTradeTime = datetime.datetime.fromtimestamp(int(lastTrade['Time']) // 1000000, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
@@ -208,39 +218,15 @@ def getGap(endId, endTime, startTime, lastTrade, missedTrades, windows, file):
 				print(logMsg)
 				return RetVal.GAP_EXCEEDED
 
-		'''
-		windows = []
-		idx = 0
-		currWindow = 0
-		while idx < len(responseTrades):
-			windows.append(currWindow)
-			currWindow = 0
-			formattedDate = dateutil.parser.isoparse(responseTrades[idx]['time'])
-			print(int(datetime.datetime.timestamp(formattedDate)))
-			window = int(datetime.datetime.timestamp(formattedDate)) * 1000000
-			microseconds = window
-			print(window)
-			print(window + 1000000)
-			print("follows")
-			while (microseconds < window + 1000000):
-				print(microseconds)
-				currWindow += 1
-				idx += 1
-				if idx >= len(responseTrades):
-					windows.append(currWindow)
-					break;
-				formattedDate = dateutil.parser.isoparse(responseTrades[idx]['time'])
-				microseconds = int(datetime.datetime.timestamp(formattedDate) * 1000000)
-		print(max(windows))
-		print(windows)
-		'''
-
 		# Fringe case for when the lastTrade comes after the trades in the response
-		if int(lastTrade['tradeId']) >= int(responseTrades[-1]['trade_id']):
-			return RetVal.SUCCESS
+		# if int(lastTrade['tradeId']) >= int(responseTrades[-1]['trade_id']):
+		# 	return RetVal.SUCCESS
 
 		while (tradeId < endId):
-			idx = next((i for i, x in enumerate(responseTrades) if int(x['trade_id']) == tradeId), -1)
+			if len(responseTrades) == 0:
+				idx = -1
+			else:
+				idx = next((i for i, x in enumerate(responseTrades) if int(x['trade_id']) == tradeId), -1)
 			if (idx != -1):
 				record = prepareRecord(responseTrades[idx])
 				updateRecordTime(record, lastTrade)
@@ -253,8 +239,14 @@ def getGap(endId, endTime, startTime, lastTrade, missedTrades, windows, file):
 				if (idx == len(responseTrades) - 1):
 					break
 			else:
-				missedTrades.append(tradeId)
-				# printError(LookupError("Trade ID " + str(tradeId) + " not found"), "Requests")
+				while (retVal := findMissingTrade(tradeId, lastResponse, lastTrade, windows, file)) == RetVal.WAIT:
+					# Rate limit is 30 requests per second
+					time.sleep(1 / 30)
+
+				if retVal != RetVal.SUCCESS:
+					missedTrades.append(tradeId)
+					# printError(LookupError("Trade ID " + str(tradeId) + " not found"), "Requests")
+
 			tradeId += 1
 		return RetVal.SUCCESS
 	except requests.HTTPError as e:
@@ -262,7 +254,7 @@ def getGap(endId, endTime, startTime, lastTrade, missedTrades, windows, file):
 		print(logMsg)
 		traceback.print_exc()
 		printError(e)
-		if response.status_code == 429 or response.status_code == 502 or response.status_code == 500 or response.status_code == 401 or response.status_code == 524 or response.status_code == 503 or response.status_code == 404 or response.status_code == 504:
+		if response.status_code in WAIT_STATUS_CODES:
 			return RetVal.WAIT
 		else:
 			return RetVal.FAILURE
@@ -284,6 +276,75 @@ def getGap(endId, endTime, startTime, lastTrade, missedTrades, windows, file):
 		traceback.print_exc()
 		printError(e)
 		return RetVal.FAILURE
+
+def findMissingTrade(tradeId, lastResponse, lastTrade, windows, file):
+	if not lastResponse or tradeId >= lastResponse["afterId"]:
+		url = "https://api.exchange.coinbase.com/products/%s/trades" % (symbol)
+		if not lastResponse:
+			afterId = tradeId + 1000
+		else:
+			afterId = max(tradeId, lastResponse["afterId"]) + 1000
+		params = {"after": str(afterId)}
+
+		try:
+			logMsg = "Sending HTTP request for %s trades before %s (lastTradeId: %s)" % (symbol, afterId, lastTrade['tradeId'])
+			print(logMsg)
+			response = requests.get(url, params=params)
+			response.raise_for_status()
+			responseTrades = response.json()
+
+			cleanTrades(responseTrades)
+			lastResponse["afterId"] =  min(afterId, responseTrades[-1]["trade_id"] + 1)
+			lastResponse["trades"] = responseTrades
+			if not responseTrades:
+				logMsg = "HTTP response contains 0 trades (after cleaning)"
+				print(logMsg)
+
+			logMsg = "HTTP response contains %d trades (%s) (%s - %s)" % (len(responseTrades), ", ".join(getRanges(responseTrades)), responseTrades[0]['time'], responseTrades[-1]['time'])
+			print(logMsg)
+			# print(responseTrades)
+		except requests.HTTPError as e:
+			logMsg = "Encountered HTTPError %s" % (repr(e))
+			print(logMsg)
+			traceback.print_exc()
+			printError(e)
+			if response.status_code in WAIT_STATUS_CODES:
+				return RetVal.WAIT
+			else:
+				return RetVal.FAILURE
+		except requests.ConnectionError as e:
+			logMsg = "Encountered ConnectionError %s" % (repr(e))
+			print(logMsg)
+			traceback.print_exc()
+			printError(e)
+			return RetVal.WAIT
+		except requests.exceptions.ChunkedEncodingError as e:
+			logMsg = "Encountered ChunkedEncodingError %s" % (repr(e))
+			print(logMsg)
+			traceback.print_exc()
+			printError(e)
+			return RetVal.WAIT
+		except Exception as e:
+			logMsg = "Encountered other exception %s" % (repr(e))
+			print(logMsg)
+			traceback.print_exc()
+			printError(e)
+			return RetVal.FAILURE
+
+	idx = next((i for i, x in enumerate(lastResponse["trades"]) if int(x['trade_id']) == tradeId), -1)
+	if (idx != -1):
+		record = prepareRecord(lastResponse["trades"][idx])
+		updateRecordTime(record, lastTrade)
+		adjustWindow(record, windows)
+		tempRecord = record.copy()
+		tempRecord.insert(1, symbol)
+		tempRecord.insert(1, "price")
+		file.write(",".join(tempRecord) + '\n')
+		return RetVal.SUCCESS
+	else:
+		return RetVal.FAILURE
+		# missedTrades.append(tradeId)
+		# printError(LookupError("Trade ID " + str(tradeId) + " not found"), "Requests")
 
 def cleanTrades(trades):
 	for idx, _ in enumerate(trades):
@@ -314,22 +375,22 @@ def getRanges(trades):
 		return []
 
 	ranges = []
-	lastContiguousId = trades[0]["trade_id"]
+	lastContiguousId = str(trades[0]["trade_id"])
 	for idx, trade in enumerate(trades):
 		if idx == 0:
 			continue
-		prevId = trades[idx - 1]["trade_id"]
+		prevId = str(trades[idx - 1]["trade_id"])
 		if int(trade["trade_id"]) - 1 != int(prevId):
 			if lastContiguousId == prevId:
 				ranges.append(lastContiguousId)
 			else:
 				ranges.append(lastContiguousId + "-" + prevId)
-			lastContiguousId = trade["trade_id"]
+			lastContiguousId = str(trade["trade_id"])
 		if idx == len(trades) - 1:
-			if lastContiguousId == trade["trade_id"]:
+			if lastContiguousId == str(trade["trade_id"]):
 				ranges.append(lastContiguousId)
 			else:
-				ranges.append(lastContiguousId + "-" + trade["trade_id"])
+				ranges.append(lastContiguousId + "-" + str(trade["trade_id"]))
 	return ranges
 
 def getMissedRanges(ids):
