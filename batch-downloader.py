@@ -219,7 +219,7 @@ def getGap(endId, endTime, startTime, isEndOfRange, lastTrade, missedTrades, win
 				return RetVal.GAP_EXCEEDED
 
 		# Fringe case for when the lastTrade comes after the trades in the response
-		# if int(lastTrade['tradeId']) >= int(responseTrades[-1]['trade_id']):
+		# if int(lastTrade['tradeId']) >= int(responseTrades[-1]['trade_id']) and not isEndOfRange:
 		# 	return RetVal.SUCCESS
 
 		while (tradeId < endId):
