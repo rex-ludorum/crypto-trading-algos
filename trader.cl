@@ -756,7 +756,9 @@ __kernel void volDeltaTrader(__global int* numTrades, __global tradeWithoutDate*
 	for (int i = 0; i < *numTrades; i++) {
 		double vol = trades[i].qty;
 		double price = trades[i].price;
-		double volDelta = inds[i].vols[indicatorIdx];
+		double sellVol = inds[i].vols[2 * indicatorIdx];
+		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
+		double volDelta = buyVol - sellVol;
 		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
 		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
 		long microseconds = trades[i].timestamp;
@@ -827,7 +829,9 @@ __kernel void volDeltaTraderWithOnlineAlgs(__global int* numTrades, __global tra
 	for (int i = 0; i < *numTrades; i++) {
 		double vol = trades[i].qty;
 		double price = trades[i].price;
-		double volDelta = inds[i].vols[indicatorIdx];
+		double sellVol = inds[i].vols[2 * indicatorIdx];
+		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
+		double volDelta = buyVol - sellVol;
 		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
 		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
 		long microseconds = trades[i].timestamp;
@@ -911,7 +915,9 @@ __kernel void volDeltaTraderFutures(__global int* numTrades, __global tradeWitho
 	for (int i = 0; i < *numTrades; i++) {
 		double vol = trades[i].qty;
 		double price = trades[i].price;
-		double volDelta = inds[i].vols[indicatorIdx];
+		double sellVol = inds[i].vols[2 * indicatorIdx];
+		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
+		double volDelta = buyVol - sellVol;
 		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
 		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
 		long microseconds = trades[i].timestamp;
@@ -988,7 +994,9 @@ __kernel void volDeltaTraderFuturesWithOnlineAlgs(__global int* numTrades, __glo
 	for (int i = 0; i < *numTrades; i++) {
 		double vol = trades[i].qty;
 		double price = trades[i].price;
-		double volDelta = inds[i].vols[indicatorIdx];
+		double sellVol = inds[i].vols[2 * indicatorIdx];
+		double buyVol = inds[i].vols[2 * indicatorIdx + 1];
+		double volDelta = buyVol - sellVol;
 		// printf("%e %f %lld %d %d\n", vol, price, trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
 		// printf("%ld %d %d\n", trades[i].timestamp, trades[i].tradeId, trades[i].isBuyerMaker);
 		long microseconds = trades[i].timestamp;

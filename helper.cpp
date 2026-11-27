@@ -196,6 +196,25 @@ int isDst(long long ts) {
 	}
 }
 
+int isInTradingHours(long long microseconds, int periodsAfterOpen) {
+	int isDSTInt = isDst(microseconds);
+	long long dayRemainder =
+			microseconds % MICROSECONDS_IN_DAY + isDSTInt * MICROSECONDS_IN_HOUR;
+	long long weekRemainder =
+			microseconds % MICROSECONDS_IN_WEEK + isDSTInt * MICROSECONDS_IN_HOUR;
+	long long openRemainder = CME_OPEN + periodsAfterOpen * MICROSECONDS_IN_HOUR;
+	openRemainder %= MICROSECONDS_IN_DAY;
+	bool inClose;
+	if (openRemainder > CME_CLOSE)
+		inClose = dayRemainder >= CME_CLOSE && dayRemainder < openRemainder;
+	else
+		inClose = dayRemainder >= CME_CLOSE || dayRemainder < openRemainder;
+	bool onWeekend =
+			weekRemainder >= CME_CLOSE_FRIDAY && weekRemainder < CME_OPEN_SUNDAY;
+
+	return !inClose && !onWeekend;
+}
+
 tradeWithoutDate convertTrade(const trade &orig) {
 	tradeWithoutDate newTrade;
 	// newTrade.tradeId = orig.tradeId;
@@ -544,6 +563,368 @@ void outputMetrics(ostream &os, size_t idx, const ComboVec &comboVec,
 			 << " minutes" << endl;
 		os << "Average TWAP: " << twapsVec[idx].mean << endl;
 		os << "Max TWAP: " << twapsVec[idx].max << endl;
+	}
+	os << defaultfloat;
+}
+
+void outputMetrics(ostream &os, size_t idx, const ComboVec &comboVec,
+									 const vector<tradeRecord> &tradeRecordsVec,
+									 const vector<perfMetrics> &allPerfMetrics,
+									 const vector<drawdowns> &drawdownsVec,
+									 const vector<drawdownLengths> &drawdownLengthsVec,
+									 const vector<lossStreaks> &lossStreaksVec,
+									 const vector<tradeDurations> &tradeDurationsVec,
+									 const vector<wins> &winsVec, const vector<losses> &lossesVec,
+									 const vector<twap> &twapsVec,
+									 const vector<DetailedTradeVec> &allTrades, bool listTrades) {
+	os << fixed;
+	os << "Combo index: " << idx << endl;
+	os << "Annualized return: " << tradeRecordsVec[idx].capital << endl;
+
+	auto visitor = [&os, &idx](auto &vec) {
+		using T = typename decay_t<decltype(vec)>::value_type;
+		if constexpr (is_same_v<T, comboVolPerps>) {
+			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
+			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
+				 << endl;
+			os << "Window: " << vec[idx].window / ONE_MINUTE_MICROSECONDS
+				 << " minutes" << endl;
+			os << "Buy volume threshold: " << vec[idx].buyVolPercentile << endl;
+			os << "Sell volume threshold: " << vec[idx].sellVolPercentile << endl;
+			os << "Leverage multiplier: " << vec[idx].leverageMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
+		} else if constexpr (is_same_v<T, comboVolFutures>) {
+			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
+			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
+				 << endl;
+			os << "Window: " << vec[idx].window / ONE_MINUTE_MICROSECONDS
+				 << " minutes" << endl;
+			os << "Buy volume threshold: " << vec[idx].buyVolPercentile << endl;
+			os << "Sell volume threshold: " << vec[idx].sellVolPercentile << endl;
+			os << "Contract multiplier: " << vec[idx].contractMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
+		} else if constexpr (is_same_v<T, comboVolDeltaPerps>) {
+			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
+			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
+				 << endl;
+			os << "Window: " << vec[idx].window / ONE_MINUTE_MICROSECONDS
+				 << " minutes" << endl;
+			os << "Buy volume delta threshold: " << vec[idx].buyVolDeltaPercentile
+				 << endl;
+			os << "Sell volume delta threshold: " << vec[idx].sellVolDeltaPercentile
+				 << endl;
+			os << "Leverage multiplier: " << vec[idx].leverageMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
+		} else if constexpr (is_same_v<T, comboVolDeltaFutures>) {
+			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
+			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
+				 << endl;
+			os << "Window: " << vec[idx].window / ONE_MINUTE_MICROSECONDS
+				 << " minutes" << endl;
+			os << "Buy volume delta threshold: " << vec[idx].buyVolDeltaPercentile
+				 << endl;
+			os << "Sell volume delta threshold: " << vec[idx].sellVolDeltaPercentile
+				 << endl;
+			os << "Contract multiplier: " << vec[idx].contractMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
+		} else if constexpr (is_same_v<T, comboVolExitPerps>) {
+			os << "Window: " << vec[idx].window / ONE_MINUTE_MICROSECONDS
+				 << " minutes" << endl;
+			os << "Buy volume threshold: " << vec[idx].buyVolPercentile << endl;
+			os << "Sell volume threshold: " << vec[idx].sellVolPercentile << endl;
+			os << "Buy volume exit threshold: " << vec[idx].buyVolExitPercentile
+				 << endl;
+			os << "Sell volume exit threshold: " << vec[idx].sellVolExitPercentile
+				 << endl;
+			os << "Leverage multiplier: " << vec[idx].leverageMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
+		} else if constexpr (is_same_v<T, comboVolExitFutures>) {
+			os << "Window: " << vec[idx].window / ONE_MINUTE_MICROSECONDS
+				 << " minutes" << endl;
+			os << "Buy volume threshold: " << vec[idx].buyVolPercentile << endl;
+			os << "Sell volume threshold: " << vec[idx].sellVolPercentile << endl;
+			os << "Buy volume exit threshold: " << vec[idx].buyVolExitPercentile
+				 << endl;
+			os << "Sell volume exit threshold: " << vec[idx].sellVolExitPercentile
+				 << endl;
+			os << "Contract multiplier: " << vec[idx].contractMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
+		} else if constexpr (is_same_v<T, comboAllVolPerps>) {
+			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
+			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
+				 << endl;
+			os << "Window: " << vec[idx].window / ONE_MINUTE_MICROSECONDS
+				 << " minutes" << endl;
+			os << "Buy volume threshold: " << vec[idx].buyVolPercentile << endl;
+			os << "Sell volume threshold: " << vec[idx].sellVolPercentile << endl;
+			os << "Buy volume delta threshold: " << vec[idx].buyVolDeltaPercentile
+				 << endl;
+			os << "Sell volume delta threshold: " << vec[idx].sellVolDeltaPercentile
+				 << endl;
+			os << "Leverage multiplier: " << vec[idx].leverageMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
+		} else if constexpr (is_same_v<T, comboAllVolFutures>) {
+			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
+			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
+				 << endl;
+			os << "Window: " << vec[idx].window / ONE_MINUTE_MICROSECONDS
+				 << " minutes" << endl;
+			os << "Buy volume threshold: " << vec[idx].buyVolPercentile << endl;
+			os << "Sell volume threshold: " << vec[idx].sellVolPercentile << endl;
+			os << "Buy volume delta threshold: " << vec[idx].buyVolDeltaPercentile
+				 << endl;
+			os << "Sell volume delta threshold: " << vec[idx].sellVolDeltaPercentile
+				 << endl;
+			os << "Contract multiplier: " << vec[idx].contractMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
+		} else if constexpr (is_same_v<T, comboTrendPerps>) {
+			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
+			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
+				 << endl;
+			os << "Entry threshold: "
+				 << format("{:.2f}", (double)vec[idx].entryThreshold) << endl;
+			os << "Leverage multiplier: " << vec[idx].leverageMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
+		} else if constexpr (is_same_v<T, comboTrendFutures>) {
+			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
+			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
+				 << endl;
+			os << "Entry threshold: "
+				 << format("{:.2f}", (double)vec[idx].entryThreshold) << endl;
+			os << "Contract multiplier: " << vec[idx].contractMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
+		} else if constexpr (is_same_v<T, comboVolTrendPerps>) {
+			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
+			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
+				 << endl;
+			os << "Window: " << vec[idx].window / ONE_MINUTE_MICROSECONDS
+				 << " minutes" << endl;
+			os << "Buy volume threshold: " << vec[idx].buyVolPercentile << endl;
+			os << "Sell volume threshold: " << vec[idx].sellVolPercentile << endl;
+			os << "Entry threshold: "
+				 << format("{:.2f}", (double)vec[idx].entryThreshold) << endl;
+			os << "Leverage multiplier: " << vec[idx].leverageMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
+		} else if constexpr (is_same_v<T, comboVolTrendFutures>) {
+			os << "Target: " << format("{:.2f}", (double)vec[idx].target) << endl;
+			os << "Stop loss: " << format("{:.2f}", (double)vec[idx].stopLoss)
+				 << endl;
+			os << "Window: " << vec[idx].window / ONE_MINUTE_MICROSECONDS
+				 << " minutes" << endl;
+			os << "Buy volume threshold: " << vec[idx].buyVolPercentile << endl;
+			os << "Sell volume threshold: " << vec[idx].sellVolPercentile << endl;
+			os << "Entry threshold: "
+				 << format("{:.2f}", (double)vec[idx].entryThreshold) << endl;
+			os << "Contract multiplier: " << vec[idx].contractMultiplier << endl;
+			os << "Trading start: " << vec[idx].periodsAfterOpen << endl;
+		}
+	};
+
+	visit(visitor, comboVec);
+
+	os << "Total trades: "
+		 << tradeRecordsVec[idx].shorts + tradeRecordsVec[idx].longs << endl;
+	os << "Wins: "
+		 << tradeRecordsVec[idx].shortWins + tradeRecordsVec[idx].longWins << endl;
+	os << "Losses: "
+		 << tradeRecordsVec[idx].shortLosses + tradeRecordsVec[idx].longLosses
+		 << endl;
+	os << "Longs: " << tradeRecordsVec[idx].longs << endl;
+	os << "Long wins: " << tradeRecordsVec[idx].longWins << endl;
+	os << "Long losses: " << tradeRecordsVec[idx].longLosses << endl;
+	os << "Shorts: " << tradeRecordsVec[idx].shorts << endl;
+	os << "Short wins: " << tradeRecordsVec[idx].shortWins << endl;
+	os << "Short losses: " << tradeRecordsVec[idx].shortLosses << endl;
+
+	if (listTrades) {
+		os << "Sharpe ratio: " << allPerfMetrics[idx].sharpe << endl;
+		os << "Average win margin: " << winsVec[idx].mean << endl;
+		os << "Win margin standard deviation: "
+			 << sqrt(winsVec[idx].m2 / (winsVec[idx].n - 1)) << endl;
+		os << "Average loss margin: " << lossesVec[idx].mean << endl;
+		os << "Loss margin standard deviation: "
+			 << sqrt(lossesVec[idx].m2 / (lossesVec[idx].n - 1)) << endl;
+		os << "Average drawdown: " << drawdownsVec[idx].mean << endl;
+		os << "Drawdown standard deviation: "
+			 << sqrt(drawdownsVec[idx].m2 / (drawdownsVec[idx].n - 1)) << endl;
+		os << "Max drawdown: " << drawdownsVec[idx].max << endl;
+		os << "Average loss streak: " << lossStreaksVec[idx].mean << endl;
+		os << "Loss streak standard deviation: "
+			 << sqrt(lossStreaksVec[idx].m2 / (lossStreaksVec[idx].n - 1)) << endl;
+		os << "Max loss streak: " << lossStreaksVec[idx].max << endl;
+		os << "Average drawdown length: "
+			 << drawdownLengthsVec[idx].mean / (double)ONE_HOUR_MICROSECONDS
+			 << " hours" << endl;
+		os << "Drawdown length standard deviation: "
+			 << sqrt(drawdownLengthsVec[idx].m2 / (lossStreaksVec[idx].n - 1)) /
+							(double)ONE_HOUR_MICROSECONDS
+			 << " hours" << endl;
+		os << "Max drawdown length: "
+			 << drawdownLengthsVec[idx].max / (double)ONE_HOUR_MICROSECONDS
+			 << " hours" << endl;
+		os << "Average trade duration: "
+			 << tradeDurationsVec[idx].mean / (double)ONE_MINUTE_MICROSECONDS
+			 << " minutes" << endl;
+		os << "Trade duration standard deviation: "
+			 << sqrt(tradeDurationsVec[idx].m2 / (tradeDurationsVec[idx].n - 1)) /
+							(double)ONE_MINUTE_MICROSECONDS
+			 << " minutes" << endl;
+		os << "Max trade duration: "
+			 << (double)tradeDurationsVec[idx].max / (double)ONE_MINUTE_MICROSECONDS
+			 << " minutes" << endl;
+		os << "Average TWAP: " << twapsVec[idx].mean << endl;
+		os << "Max TWAP: " << twapsVec[idx].max << endl;
+
+		auto visitor = [&os, &idx, &allTrades](auto &vec) {
+			using T = typename decay_t<decltype(vec)>::value_type;
+			if constexpr (is_same_v<T, comboVolPerps> ||
+										is_same_v<T, comboVolFutures>) {
+				const vector<volDetailedTrade> &trades =
+						get<vector<volDetailedTrade>>(allTrades[idx]);
+				for (size_t j = 0; j < trades.size(); j++) {
+					os << endl;
+					volDetailedTrade e = trades[j];
+					if (e.isLong) {
+						os << "Long ";
+					} else {
+						os << "Short ";
+					}
+					os << e.profitMargin << " " << e.endingCapital << endl;
+					os << e.entryTimestamp << " ";
+					auto tp = system_clock::time_point(microseconds(e.entryTimestamp));
+					os << format("{:%Y-%m-%d %H:%M:%S}", tp) << endl;
+					os << e.exitTimestamp << " ";
+					tp = system_clock::time_point(microseconds(e.exitTimestamp));
+					os << format("{:%Y-%m-%d %H:%M:%S}", tp) << endl;
+					os << "Buy volume: " << e.entryData.buyVol << endl;
+					os << "Sell volume: " << e.entryData.sellVol << endl;
+				}
+			} else if constexpr (is_same_v<T, comboVolDeltaPerps> ||
+													 is_same_v<T, comboVolDeltaFutures>) {
+				const vector<volDetailedTrade> &trades =
+						get<vector<volDetailedTrade>>(allTrades[idx]);
+				for (size_t j = 0; j < trades.size(); j++) {
+					os << endl;
+					volDetailedTrade e = trades[j];
+					if (e.isLong) {
+						os << "Long ";
+					} else {
+						os << "Short ";
+					}
+					os << e.profitMargin << " " << e.endingCapital << endl;
+					os << e.entryTimestamp << " ";
+					auto tp = system_clock::time_point(microseconds(e.entryTimestamp));
+					os << format("{:%Y-%m-%d %H:%M:%S}", tp) << endl;
+					os << e.exitTimestamp << " ";
+					tp = system_clock::time_point(microseconds(e.exitTimestamp));
+					os << format("{:%Y-%m-%d %H:%M:%S}", tp) << endl;
+					os << "Volume delta: " << e.entryData.buyVol - e.entryData.sellVol
+						 << endl;
+				}
+			} else if constexpr (is_same_v<T, comboVolExitPerps> ||
+													 is_same_v<T, comboVolExitFutures>) {
+				const vector<volExitDetailedTrade> &trades =
+						get<vector<volExitDetailedTrade>>(allTrades[idx]);
+				for (size_t j = 0; j < trades.size(); j++) {
+					os << endl;
+					volExitDetailedTrade e = trades[j];
+					if (e.isLong) {
+						os << "Long ";
+					} else {
+						os << "Short ";
+					}
+					os << e.profitMargin << " " << e.endingCapital << endl;
+					os << e.entryTimestamp << " ";
+					auto tp = system_clock::time_point(microseconds(e.entryTimestamp));
+					os << format("{:%Y-%m-%d %H:%M:%S}", tp) << endl;
+					os << e.exitTimestamp << " ";
+					tp = system_clock::time_point(microseconds(e.exitTimestamp));
+					os << format("{:%Y-%m-%d %H:%M:%S}", tp) << endl;
+					os << "Buy entry volume: " << e.entryData.buyVol << endl;
+					os << "Sell entry volume: " << e.entryData.sellVol << endl;
+					os << "Buy exit volume: " << e.exitData.buyVol << endl;
+					os << "Sell exit volume: " << e.exitData.sellVol << endl;
+				}
+			} else if constexpr (is_same_v<T, comboAllVolPerps> ||
+													 is_same_v<T, comboAllVolFutures>) {
+				const vector<volDetailedTrade> &trades =
+						get<vector<volDetailedTrade>>(allTrades[idx]);
+				for (size_t j = 0; j < trades.size(); j++) {
+					os << endl;
+					volDetailedTrade e = trades[j];
+					if (e.isLong) {
+						os << "Long ";
+					} else {
+						os << "Short ";
+					}
+					os << e.profitMargin << " " << e.endingCapital << endl;
+					os << e.entryTimestamp << " ";
+					auto tp = system_clock::time_point(microseconds(e.entryTimestamp));
+					os << format("{:%Y-%m-%d %H:%M:%S}", tp) << endl;
+					os << e.exitTimestamp << " ";
+					tp = system_clock::time_point(microseconds(e.exitTimestamp));
+					os << format("{:%Y-%m-%d %H:%M:%S}", tp) << endl;
+					os << "Buy volume: " << e.entryData.buyVol << endl;
+					os << "Sell volume: " << e.entryData.sellVol << endl;
+					os << "Volume delta: " << e.entryData.buyVol - e.entryData.sellVol
+						 << endl;
+				}
+			} else if constexpr (is_same_v<T, comboTrendPerps> ||
+													 is_same_v<T, comboTrendFutures>) {
+				const vector<trendDetailedTrade> &trades =
+						get<vector<trendDetailedTrade>>(allTrades[idx]);
+				for (size_t j = 0; j < trades.size(); j++) {
+					os << endl;
+					trendDetailedTrade e = trades[j];
+					if (e.isLong) {
+						os << "Long ";
+					} else {
+						os << "Short ";
+					}
+					os << e.profitMargin << " " << e.endingCapital << endl;
+					os << e.entryTimestamp << " ";
+					auto tp = system_clock::time_point(microseconds(e.entryTimestamp));
+					os << format("{:%Y-%m-%d %H:%M:%S}", tp) << endl;
+					os << e.exitTimestamp << " ";
+					tp = system_clock::time_point(microseconds(e.exitTimestamp));
+					os << format("{:%Y-%m-%d %H:%M:%S}", tp) << endl;
+					os << "Entry price: " << e.entryData.price << endl;
+					os << "Pivot minimum price: " << e.entryData.minPrice << endl;
+					os << "Pivot maximum price: " << e.entryData.maxPrice << endl;
+					os << "Increasing: " << e.entryData.increasing << endl;
+				}
+			} else if constexpr (is_same_v<T, comboVolTrendPerps> ||
+													 is_same_v<T, comboVolTrendFutures>) {
+				const vector<volTrendDetailedTrade> &trades =
+						get<vector<volTrendDetailedTrade>>(allTrades[idx]);
+				for (size_t j = 0; j < trades.size(); j++) {
+					os << endl;
+					volTrendDetailedTrade e = trades[j];
+					if (e.isLong) {
+						os << "Long ";
+					} else {
+						os << "Short ";
+					}
+					os << e.profitMargin << " " << e.endingCapital << endl;
+					os << e.entryTimestamp << " ";
+					auto tp = system_clock::time_point(microseconds(e.entryTimestamp));
+					os << format("{:%Y-%m-%d %H:%M:%S}", tp) << endl;
+					os << e.exitTimestamp << " ";
+					tp = system_clock::time_point(microseconds(e.exitTimestamp));
+					os << format("{:%Y-%m-%d %H:%M:%S}", tp) << endl;
+					os << "Buy volume: " << e.entryData.buyVol << endl;
+					os << "Sell volume: " << e.entryData.sellVol << endl;
+					os << "Entry price: " << e.entryData.price << endl;
+					os << "Pivot minimum price: " << e.entryData.minPrice << endl;
+					os << "Pivot maximum price: " << e.entryData.maxPrice << endl;
+					os << "Increasing: " << e.entryData.increasing << endl;
+				}
+			}
+		};
+
+		if (&os != &cout) {
+			visit(visitor, comboVec);
+		}
 	}
 	os << defaultfloat;
 }

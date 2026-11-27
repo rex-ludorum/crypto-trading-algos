@@ -57,6 +57,8 @@ long long getTsOfNextMonth(long long ts);
 
 int isDst(long long ts);
 
+int isInTradingHours(long long microseconds, int periodsAfterOpen);
+
 enum class Mode {
 	Volume,
 	VolumeDelta,
@@ -233,6 +235,69 @@ struct __attribute__((packed)) comboVolTrendFutures {
 	cl_int periodsAfterOpen;
 };
 
+struct __attribute__((packed)) volEntryData {
+	cl_double buyVol;
+	cl_double sellVol;
+};
+
+struct __attribute__((packed)) volDetailedTrade {
+	double profitMargin;
+	long long entryTimestamp;
+	long long exitTimestamp;
+	volEntryData entryData;
+	bool isLong;
+	double endingCapital;
+};
+
+struct __attribute__((packed)) volExitData {
+	cl_double buyVol;
+	cl_double sellVol;
+};
+
+struct __attribute__((packed)) volExitDetailedTrade {
+	double profitMargin;
+	long long entryTimestamp;
+	long long exitTimestamp;
+	volEntryData entryData;
+	volExitData exitData;
+	bool isLong;
+	double endingCapital;
+};
+
+struct __attribute__((packed)) trendEntryData {
+	cl_double price;
+	cl_double maxPrice;
+	cl_double minPrice;
+	cl_uchar increasing;
+};
+
+struct __attribute__((packed)) trendDetailedTrade {
+	double profitMargin;
+	long long entryTimestamp;
+	long long exitTimestamp;
+	trendEntryData entryData;
+	bool isLong;
+	double endingCapital;
+};
+
+struct __attribute__((packed)) volTrendEntryData {
+	cl_double price;
+	cl_double maxPrice;
+	cl_double minPrice;
+	cl_uchar increasing;
+	cl_double buyVol;
+	cl_double sellVol;
+};
+
+struct __attribute__((packed)) volTrendDetailedTrade {
+	double profitMargin;
+	long long entryTimestamp;
+	long long exitTimestamp;
+	volTrendEntryData entryData;
+	bool isLong;
+	double endingCapital;
+};
+
 using ComboVec =
 		variant<vector<comboVolPerps>, vector<comboVolFutures>,
 						vector<comboVolDeltaPerps>, vector<comboVolDeltaFutures>,
@@ -240,6 +305,10 @@ using ComboVec =
 						vector<comboAllVolPerps>, vector<comboAllVolFutures>,
 						vector<comboTrendPerps>, vector<comboTrendFutures>,
 						vector<comboVolTrendPerps>, vector<comboVolTrendFutures>>;
+
+using DetailedTradeVec =
+		variant<vector<volDetailedTrade>, vector<volExitDetailedTrade>,
+						vector<trendDetailedTrade>, vector<volTrendDetailedTrade>>;
 
 struct __attribute__((packed)) drawdowns {
 	cl_int n;
@@ -343,5 +412,16 @@ void outputMetrics(ostream &os, size_t idx, const ComboVec &comboVec,
 									 const vector<tradeDurations> &tradeDurationsVec,
 									 const vector<wins> &winsVec, const vector<losses> &lossesVec,
 									 const vector<twap> &twapsVec, bool listTrades);
+
+void outputMetrics(ostream &os, size_t idx, const ComboVec &comboVec,
+									 const vector<tradeRecord> &tradeRecordsVec,
+									 const vector<perfMetrics> &allPerfMetrics,
+									 const vector<drawdowns> &drawdownsVec,
+									 const vector<drawdownLengths> &drawdownLengthsVec,
+									 const vector<lossStreaks> &lossStreaksVec,
+									 const vector<tradeDurations> &tradeDurationsVec,
+									 const vector<wins> &winsVec, const vector<losses> &lossesVec,
+									 const vector<twap> &twapsVec,
+									 const vector<DetailedTradeVec> &allTrades, bool listTrades);
 
 #endif
