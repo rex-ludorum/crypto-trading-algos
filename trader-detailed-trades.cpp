@@ -62,7 +62,7 @@ mutex coutMutex;
 
 // const vector<size_t> indicesToRun = {62134, 53504, 62983};
 // const vector<size_t> indicesToRun = {962240, 473688};
-const vector<size_t> indicesToRun = {765701, 1077356};
+const vector<size_t> indicesToRun = {22596959, 14971560, 2588586};
 
 Mode mode;
 
@@ -742,7 +742,7 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 															lossesVec, twapsVec);
 
 #ifdef DEBUG
-						assert(trades.empty());
+						assert(!trades.empty());
 
 						auto &currentTrade = trades.back();
 						assert(currentTrade.profitMargin == 0);
@@ -792,7 +792,7 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 															lossesVec, twapsVec);
 
 #ifdef DEBUG
-						assert(trades.empty());
+						assert(!trades.empty());
 
 						auto &currentTrade = trades.back();
 						assert(currentTrade.profitMargin == 0);
@@ -833,7 +833,7 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 															lossesVec, twapsVec);
 
 #ifdef DEBUG
-						assert(trades.empty());
+						assert(!trades.empty());
 
 						auto &currentTrade = trades.back();
 						assert(currentTrade.profitMargin == 0);
@@ -885,7 +885,7 @@ void performWork(size_t index, size_t currIdx, size_t currSize,
 															lossesVec, twapsVec);
 
 #ifdef DEBUG
-						assert(trades.empty());
+						assert(!trades.empty());
 
 						auto &currentTrade = trades.back();
 						assert(currentTrade.profitMargin == 0);
@@ -1590,40 +1590,58 @@ int main(int argc, char *argv[]) {
 
 	switch (mode) {
 	case Mode::Volume:
-		if (futures)
+		if (futures) {
 			comboVec = vector<comboVolFutures>{};
-		else
+			tempCombos = vector<comboVolFutures>{};
+		} else {
 			comboVec = vector<comboVolPerps>{};
+			tempCombos = vector<comboVolPerps>{};
+		}
 		break;
 	case Mode::VolumeDelta:
-		if (futures)
+		if (futures) {
 			comboVec = vector<comboVolDeltaFutures>{};
-		else
+			tempCombos = vector<comboVolDeltaFutures>{};
+		} else {
 			comboVec = vector<comboVolDeltaPerps>{};
+			tempCombos = vector<comboVolDeltaPerps>{};
+		}
 		break;
 	case Mode::VolumeExit:
-		if (futures)
+		if (futures) {
 			comboVec = vector<comboVolExitFutures>{};
-		else
+			tempCombos = vector<comboVolExitFutures>{};
+		} else {
 			comboVec = vector<comboVolExitPerps>{};
+			tempCombos = vector<comboVolExitPerps>{};
+		}
 		break;
 	case Mode::AllVolume:
-		if (futures)
+		if (futures) {
 			comboVec = vector<comboAllVolFutures>{};
-		else
+			tempCombos = vector<comboAllVolFutures>{};
+		} else {
 			comboVec = vector<comboAllVolPerps>{};
+			tempCombos = vector<comboAllVolPerps>{};
+		}
 		break;
 	case Mode::Trend:
-		if (futures)
+		if (futures) {
 			comboVec = vector<comboTrendFutures>{};
-		else
+			tempCombos = vector<comboTrendFutures>{};
+		} else {
 			comboVec = vector<comboTrendPerps>{};
+			tempCombos = vector<comboTrendPerps>{};
+		}
 		break;
 	case Mode::VolumeTrend:
-		if (futures)
+		if (futures) {
 			comboVec = vector<comboVolTrendFutures>{};
-		else
+			tempCombos = vector<comboVolTrendFutures>{};
+		} else {
 			comboVec = vector<comboVolTrendPerps>{};
+			tempCombos = vector<comboVolTrendPerps>{};
+		}
 		break;
 	}
 
@@ -1955,6 +1973,8 @@ int main(int argc, char *argv[]) {
 			for (size_t i : indicesToRun) {
 				comboVec.push_back(tempCombos[i]);
 			}
+		} else {
+			cout << "Incorrect combo type" << endl;
 		}
 		tempCombos.clear();
 

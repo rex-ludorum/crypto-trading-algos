@@ -545,7 +545,7 @@ void outputMetrics(ostream &os, size_t idx, const ComboVec &comboVec,
 			 << drawdownLengthsVec[idx].mean / (double)ONE_HOUR_MICROSECONDS
 			 << " hours" << endl;
 		os << "Drawdown length standard deviation: "
-			 << sqrt(drawdownLengthsVec[idx].m2 / (lossStreaksVec[idx].n - 1)) /
+			 << sqrt(drawdownLengthsVec[idx].m2 / (drawdownsVec[idx].n - 1)) /
 							(double)ONE_HOUR_MICROSECONDS
 			 << " hours" << endl;
 		os << "Max drawdown length: "
@@ -756,7 +756,7 @@ void outputMetrics(ostream &os, size_t idx, const ComboVec &comboVec,
 			 << drawdownLengthsVec[idx].mean / (double)ONE_HOUR_MICROSECONDS
 			 << " hours" << endl;
 		os << "Drawdown length standard deviation: "
-			 << sqrt(drawdownLengthsVec[idx].m2 / (lossStreaksVec[idx].n - 1)) /
+			 << sqrt(drawdownLengthsVec[idx].m2 / (drawdownsVec[idx].n - 1)) /
 							(double)ONE_HOUR_MICROSECONDS
 			 << " hours" << endl;
 		os << "Max drawdown length: "
